@@ -1,0 +1,4408 @@
+#+TITLE: A Mendelian randomization analysis of ADHD on education performance using twins from the ABCD study
+#+SUBTITLE: BGA poster references and OpenMx code
+#+AUTHOR:lf_araujo
+#+DATE: 2024
+#+PROPERTY: toc:3
+#+STARTUP: noindent
+#+PANDOC_OPTIONS: standalone:t
+#+SETUPFILE: "./data/style.theme"
+#+STARTUP: latexpreview
+
+* Come participate in OpenMx Master Class November 14-16
+
+Link below:
+
+[[https://vipbg.vcu.edu/events/workshops/2024/openmx/]]
+
+* Poster references:
+
+1. Lisboa, B. O. et al. When should a university student be allowed academic accommodation For ADHD? A position statement for a unified procedure for use in Brazil. Brazilian Journal of Psychiatry (2023) doi:10.47626/1516-4446-2022-2999.
+2. Hinshaw, S. P. Attention Deficit Hyperactivity Disorder (ADHD): Controversy, Developmental Mechanisms, and Multiple Levels of Analysis. Annual Review of Clinical Psychology 14, 291–316 (2018).
+3. Abdellaoui, A. & Verweij, K. J. H. Dissecting polygenic signals from genome-wide association studies on human behaviour. Nat Hum Behav 5, 686–694 (2021).
+4. Dardani, C. et al. Is genetic liability to ADHD and ASD causally linked to educational attainment? Int J Epidemiol 50, 2011–2023 (2021).
+5. Michaëlsson, M. et al. The impact and causal directions for the associations between diagnosis of ADHD, socioeconomic status, and intelligence by use of a bi-directional two-sample Mendelian randomization design. BMC Med 20, 106 (2022).
+6. Demange, P. A., Boomsma, D. I., van Bergen, E. & Nivard, M. G. Evaluating the causal relationship between educational attainment and mental health. medRxiv 2023.01.26.23285029 (2023) doi:10.1101/2023.01.26.23285029.
+7. Castro-de-Araujo, L. FS., de Araujo, J. A. P., Morais Xavier, É. F. & Kanaan, R. A. A. Feedback-loop between psychotic symptoms and brain volume: A cross-lagged panel model study. Journal of Psychiatric Research 162, 150–155 (2023).
+8. Castro-de-Araujo, L. et al. Power, measurement error, and pleiotropy robustness in twin-design extensions to Mendelian Randomization. https://www.researchsquare.com (2023) doi:10.21203/rs.3.rs-3411642/v1.
+9. Demontis, D. et al. Genome-wide analyses of ADHD identify 27 risk loci, refine the genetic architecture and implicate several cognitive domains. Nat Genet 55, 198–208 (2023).
+10. Okbay, A. et al. Polygenic prediction of educational attainment within and between families from genome-wide association analyses in 3 million individuals. Nat Genet 54, 437–449 (2022).
+
+
+* TOC :toc:
+- [[#setup][Setup]]
+  - [[#munging][Munging]]
+- [[#helper-functions][Helper functions]]
+  - [[#umxmrdoc2][umxMRDoC2]]
+  - [[#mxprintfit][mxPrintFit]]
+  - [[#umxrefmodels][umxRefModels]]
+- [[#descriptive][Descriptive]]
+  - [[#tables][Tables]]
+  - [[#plots][Plots]]
+- [[#ace-reduction][ACE reduction]]
+- [[#estimation][Estimation]]
+  - [[#european-ancestry-models][European ancestry models]]
+  - [[#multigroup-by-sex][Multigroup by sex]]
+  - [[#evidence-of-sex-effect][Evidence of sex effect?]]
+- [[#afr-ancestry-models][AFR ancestry models]]
+- [[#amr-ancestry-models][AMR ancestry models]]
+- [[#mrdoc2--twins--sibs][mrdoc2 + twins + sibs]]
+- [[#range-plot][Range plot]]
+- [[#quick-sim-to-check-power-with-siblings][Quick sim to check power with siblings]]
+- [[#system-information][System information]]
+
+* Setup
+
+#+BEGIN_SRC R :results output none :session R-ea-server :exports both
+
+c("dtplyr", "stringr", "data.table", "dplyr", "purrr", "here", "readr",
+  "umx", "visdat", "ggplot2", "tidyr", "ggpubr", "tableone",
+"RColorBrewer", "colorout", "tibble", "forcats",  "patchwork",
+ "ggpmisc", "Cairo")|>
+  lapply(function(x) { if (!require(x, character.only = TRUE)) {
+             install.packages(x, dependencies = TRUE, repos = "http://cran.us.r-project.org")
+             library(x)}})
+
+set.seed(42) # setting seed for stochastic functions
+setwd( here::here()) # needed as we are in /src, in linux here() should be used
+
+## ProjectTemplate::load.project(cache_loading = FALSE) # Loading the project
+## pclean() # cleaning /src folder
+
+# R options
+options(
+  digits = 4, # Only three decimal digits
+  scipen = 999 # Remove scientific notation
+)
+
+# mxOptions
+mxOption(key = "Number of Threads", value = 23)
+mxOption(key = "maxOrdinalPerBlock", value = 200)
+mxOption(NULL, "Default optimizer", "SLSQP")
+umx_set_auto_run(autoRun = F)
+
+
+# Knitr options
+knitr::opts_chunk$set(
+  comment = NA, # remove comment symbol
+  cache.path = "../cache/", # where should I save cache?
+  fig.path = "../graphs/", # where should I save figures?
+  echo = T, # dont echo by default
+  cache = F, # dont cache by default
+  fig.width = 10, # setting the best witdth for figures
+  fig.height = 7, # best height
+  dpi = 300, # high dpi for publication quality,
+  error = FALSE, # do not interrupt in case of errors
+  warning = FALSE
+)
+
+cb_palette <- c(brewer.pal(12,"Paired"), brewer.pal(3,"Set2"))
+
+theme_luis  <- function() {
+  return_theme <-  ggplot2::theme_bw(12) +
+    ggplot2::theme(
+        panel.border = element_rect(colour = "black"),
+        legend.background = element_rect(linetype = 1, linewidth = 0.2, colour = 1))
+}
+
+#+END_SRC
+
+** Munging
+
+#+begin_src R :session R-ea-server :exports both :results output none
+inter <- full_join(  fread("EduAtt_EUR_PRS_alt.profile",
+                              select =c("IID", "SCORE"),
+                              col.names = c("src_subject_id", "EducAttain")),
+  fread("ce_p_sag.csv"),
+                 by = c("src_subject_id" )) |>
+  full_join(
+    fread("ADHD_EUR_PRS.profile",
+                  select =c("IID", "SCORE"),
+                  col.names = c("src_subject_id", "ADHD") ),
+            by = c( "src_subject_id" ) ) |>
+  # then join with the cbcl adhd scores
+  full_join(fread("mh_p_cbcl.csv"),
+            by = c("src_subject_id", "eventname")) |>
+  # then join with the lifetime med use
+  full_join(fread("2023-lifetime-med-use.csv",
+                  select =c("subjectkey","ADHD_meds_lifetime", "antipsych_lifetime",
+                            "antidep_anxiolytic_lifetime","mood_stab_lifetime") ),
+            by = c("src_subject_id" = "subjectkey")) |>
+      # enrich with the twin status
+  full_join(fread("acspsw03_4.0.csv",
+                  select = c("subjectkey", "sex", "interview_age",  "rel_ingroup_order",
+                             "rel_family_id", "genetic_zygosity_status_1", "rel_relationship",
+                          "genetic_zygosity_status_2","genetic_zygosity_status_3", "rel_group_id" )),
+            by = c("src_subject_id"="subjectkey" )) |>
+  # Only wave 3
+  filter(eventname == "3_year_follow_up_y_arm_1")
+
+
+inter_EUR <- inter |>
+  # filtering only the EUR ancestry
+  inner_join(fread("ABCD_1KGPphase3_MahalMatchSD3_EUR.list",
+                            select = 1, # first column only
+                   col.names = "src_subject_id") |> mutate(ancs = "EUR"), by = "src_subject_id") |>
+ # then join with  within ancestry pcs
+  left_join(fread("ABCD_202309_EURindivs_pcair.tsv",
+                  select = c("V1", "C1", "C2", "C3",
+                             "C4", "C5", "C6",
+                             "C7", "C8", "C9", "C10")),
+            by = c("src_subject_id" = "V1"))
+
+inter_AFR <- inter |>
+    # filtering only the EUR ancestry
+  inner_join(fread("ABCD_1KGPphase3_MahalMatchSD3_AFR.list",
+                            select = 1, # first column only
+                   col.names = "src_subject_id") |> mutate(ancs = "AFR") , by = c("src_subject_id")) |>
+  # then join with  within ancestry pcs
+  left_join(fread("ABCD_202309_AFRindivs_pcair.tsv",
+                  select = c("V1", "C1", "C2", "C3",
+                             "C4", "C5", "C6",
+                             "C7", "C8", "C9", "C10")),
+            by = c("src_subject_id" = "V1"))
+
+inter_AMR <- inter |>
+  # filtering only the EUR ancestry
+  inner_join(fread("ABCD_1KGPphase3_MahalMatchSD3_AMR.list",
+                            select = 1, # first column only
+                   col.names = "src_subject_id") |> mutate(ancs = "AMR"), by = "src_subject_id") |>
+ # then join with  within ancestry pcs
+  left_join(fread("ABCD_202309_EURindivs_pcair.tsv",
+                  select = c("V1", "C1", "C2", "C3",
+                             "C4", "C5", "C6",
+                             "C7", "C8", "C9", "C10")),
+            by = c("src_subject_id" = "V1"))
+
+
+inter <- inter_EUR |>
+  full_join(inter_AFR) |>
+  full_join(inter_AMR)
+
+inter <- inter |>
+  ## filter(ancs == "EUR") |>
+  ## drop_na(twin_zyg) |>
+  transmute(
+    sag_grade_type = ifelse(sag_grade_type == 777, NA_real_, sag_grade_type),
+    sag_grade_type = ifelse(sag_grade_type == -1, NA_real_, sag_grade_type),
+    ## zyg=twin_zyg,
+    ## rel_group_id,
+    ## rel_ingroup_order,
+    rel_family_id,
+        zyg = case_when(
+      genetic_zygosity_status_3 == "1" ~ 1,
+      genetic_zygosity_status_3 == "2" ~ 2,
+      genetic_zygosity_status_3 == "3" ~ NA_real_,
+      genetic_zygosity_status_2 == "1" ~ 1,
+      genetic_zygosity_status_2 == "2" ~ 2,
+      genetic_zygosity_status_2 == "3" ~ NA_real_,
+      genetic_zygosity_status_1 == "1" ~ 1,
+      genetic_zygosity_status_1 == "2" ~ 2,
+      genetic_zygosity_status_1 == "3" ~ NA_real_,
+    rel_relationship == "1" ~ 3, # this is not wrong, 1 means sib
+      TRUE ~ NA_real_
+     ),
+    ## zyg = ifelse(rel_relationship == "1" & is.na(zyg), 3, zyg),
+    ## src_subject_id,
+    ancs,
+    ## race = factor(race),
+    ## eventname,
+    adhd_prs = ADHD,
+    cbcl_adhd = cbcl_scr_dsm5_adhd_r,
+    C1, C2, C3, C4, C5,
+    C6, C7, C8, C9, C10,
+    sex,
+    age = as.numeric(interview_age)/12,
+    ea_prs = EducAttain, #*-1
+    ## cbcl_adhd = ntile(cbcl_adhd, 10),
+    cbcl_adhd = mxFactor(cbcl_adhd, collapse=TRUE, levels = c(0:14),
+                         labels = c("0","1", "2", "3", "3", "5", "6",
+                                    "7", "8", "8", "11", "11", "11", "11", "11")),
+    ## cbcl_adhd = fct_lump(cbcl_adhd, 8),
+    sag_grade_type = 13-sag_grade_type,
+    ## sag_grade_type = ntile(sag_grade_type, 10),
+    ## sag_grade_type = umxFactor(sag_grade_type, collapse = TRUE),
+    sag_grade_type = mxFactor(sag_grade_type, collapse = TRUE, levels = c(1:12),
+                              labels = c("1", "1", "1", "4", "5", "6", "7", "8", "8", "10", "11", "12")),
+    ## sag_grade_type = fct_lump(sag_grade_type, 8),
+    meds_lifetime = ifelse(ADHD_meds_lifetime == "present", 1, 0) # +
+    ## ifelse(antipsych_lifetime == "present", 1, 0) +
+    ## ifelse(antidep_anxiolytic_lifetime == "present", 1, 0) +
+    ## ifelse(mood_stab_lifetime == "present", 1, 0)
+  ) |>
+  # require to convert to full data frame as pivoting fails with dtplyr
+  as.data.frame()
+
+
+## inter <- umx_scale(inter,  c("ea_prs", "adhd_prs"), verbose = TRUE)
+
+
+dt <- inter %>%
+  ## filter(rel_relationship  > 1 ) %>%
+  ## filter(!is.na(zyg)) %>%
+  mutate(#zyg = ifelse(rel_relationship == "1", 1, zyg), # yes, this is not wrong
+         zyg = case_when(
+           zyg == 1 ~ "MZ",
+          zyg == 2 ~ "DZ",
+          zyg == 3 ~ "sib")) %>%
+  group_by(rel_family_id, zyg) %>%
+  mutate(TID = factor(rank(rel_family_id, ties.method = "first"))) %>%
+  filter(TID %in% c(1,2)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = TID, names_prefix = "T",
+              values_from = c(ea_prs, sex, cbcl_adhd, age,
+                              adhd_prs, sag_grade_type,
+                              C1, C2, C3, C4, C5, C6, C7, C8, C9, C10,
+                              meds_lifetime,
+                                ),
+              id_cols = c(zyg,rel_family_id, ancs)) %>%
+  # convert NAs to "absent" in the adhd meds variable
+  mutate(meds_lifetime_T1 = ifelse(is.na(meds_lifetime_T1), 0, meds_lifetime_T1),
+         meds_lifetime_T2 = ifelse(is.na(meds_lifetime_T2), 0, meds_lifetime_T2),
+         sex_T1 = case_when(
+           sex_T1 == "M" ~ 1,
+           sex_T1 == "F" ~ 2,
+           TRUE ~ NA_real_
+         ),
+         sex_T2 = case_when(
+           sex_T2 == "M" ~ 1,
+           sex_T2 == "F" ~ 2,
+           TRUE ~ NA_real_
+         ),
+         ) |>
+  # many tools will use does not recognize tibbles
+  as.data.frame()
+
+
+dt <- umx_scale_wide_twin_data(dt |> as.data.frame(),
+ varsToScale = c( "ea_prs","adhd_prs"), #, "sag_grade_type"
+                               sep = "_T", twins = 1:2)
+
+  ## mutate(
+        ## cbcl_adhd_T1 = fct_lump(cbcl_adhd_T1,8),
+        ## cbcl_adhd_T2 = fct_lump(cbcl_adhd_T2,8),
+    ## sag_grade_type_T1 = fct_lump(sag_grade_type_T1, 8),
+    ## sag_grade_type_T2 = fct_lump(sag_grade_type_T2, 8),
+  ## )
+
+#+end_src
+
+
+#+begin_src R :session R-ea-server
+relevel_factors <- function(df, cols, proportion = .1, min = 5) {
+  # Get the levels of the first column
+  first_col_levels <- levels(df[[cols[1]]])
+
+  for (col in cols) {
+    if (is.factor(df[[col]])) {
+      # Calculate the percentage of total observations for each level
+      lev_perc <- table(df[[col]]) / length(df[[col]])
+
+      # Get the levels in order
+      ordered_levels <- levels(df[[col]])
+
+      # Initialize a new vector to hold the collapsed levels
+      new_vector <- df[[col]]
+
+      # Loop over the levels
+      for (i in length(ordered_levels):2) {
+        lev <- ordered_levels[i]
+        # If the level makes up less than 10% of the observations
+        if (lev_perc[lev] < prop) {
+          # Find the previous level
+          prev_lev <- ordered_levels[i - 1]
+
+          # Collapse the level into the previous level
+          new_vector[new_vector == lev] <- prev_lev
+        }
+
+        # Ensure there are at least 5 levels left
+        if (length(unique(new_vector)) <= min) break
+      }
+
+      # Relevel the factor with the original order
+      df[[col]] <- factor(new_vector, levels = ordered_levels)
+
+      # Remove empty levels
+      df[[col]] <- droplevels(df[[col]])
+
+      # Ensure the levels match the first column
+      if (!all(levels(df[[col]]) %in% first_col_levels)) {
+        stop(paste("Levels in column", col, "do not match the first column."))
+      }
+    }
+  }
+
+  return(df)
+}
+
+#+end_src
+
+* Helper functions
+
+** umxMRDoC2
+
+#+begin_src R :session R-ea-server :exports both :results output none :eval no
+umxMRDoC2 <- function(pheno, prss = NULL, mzData = NULL, dzData = NULL, data = NULL, zyg = "zyg",
+                      sep = "_T", summary = !umx_set_silent(silent = TRUE), name = NULL,
+                      autoRun = getOption("umx_auto_run"),
+                      tryHard = c("no", "yes", "ordinal", "search"), optimizer = NULL,  covar = NULL,
+                      method = "Mehta") {
+
+  umx_set_silent(silent = TRUE)
+  tryHard = match.arg(tryHard)
+  sketch = FALSE
+  indVar = NULL
+  ordinalPresent = FALSE
+  # Below, trick to be able to use sketch model
+  colTypes = NULL
+  colTypes$nOrdVars = 0
+
+  if (missing(data) && missing(mzData) && missing(dzData)) sketch = TRUE
+
+  ## if (!is.null(covar)) {
+  ##   nCov   <- length(covar)
+  ##   indVar <- paste(covar,c(rep(1,nCov),rep(2,nCov)),sep=sep)
+  ##   message(indVar)
+  ##   message("\n")
+  ##   message(colnames(data))
+  ##   # remove NAs from covariates
+  ##   if (!is.null(data)) {
+  ##     data <- data[complete.cases(data[,c(indVar)]),]
+  ##     warning("Hey mate, found NA in the definition variables, dropped them out!")
+  ##   }
+  ## }
+
+
+  if (!is.null(covar)) {
+    nCov   <- length(covar)
+    indVar <- paste(covar,c(rep(1,nCov),rep(2,nCov)),sep=sep)
+    # remove NAs from covariates
+    if (!is.null(data)) {
+        for (ind in indVar) {
+    for (p in pheno) {
+      # Create the phenotype variable name
+      p_var <- paste0(p, "_", substr(ind, 6, 7))
+
+      # Update the indicator variable only if it is NA
+      data[[ind]][is.na(data[[ind]]) & (is.na(data[[p_var]]))] <- 99999
+      }
+    }
+      data <- data[complete.cases(data[,c(indVar)]),]
+      warning("Hey mate, found NA in the definition variables, dropped them out!")
+    }
+  }
+
+    # Managing data
+  if (!is.null(data)) {
+    if ("tbl" %in% class(data)) {
+      data = as.data.frame(data)
+    }
+    mzData = data[data[, zyg] %in% ifelse(is.null(mzData), "MZ", mzData), ]
+    dzData = data[data[, zyg] %in% ifelse(is.null(dzData), "DZ", dzData), ]
+  } else {
+    if ("tbl" %in% class(mzData)) {
+      mzData = as.data.frame(mzData)
+      dzData = as.data.frame(dzData)
+    }
+  }
+
+  vnames = tvars(c(pheno, prss), sep = sep)
+
+  if (!sketch){
+    xmu_twin_check(
+      selDVs = c(pheno, prss),
+      sep = sep, dzData = dzData, mzData = mzData, enforceSep = TRUE,
+      nSib = 2, optimizer = optimizer
+    )
+
+  # Find ordinal variables
+  colTypes = umx_is_ordered(xmu_extract_column(mzData, vnames),
+   summaryObject= TRUE)
+  }
+
+   if (colTypes$nOrdVars > 0){
+    ty = umxThresholdMatrix( rbind(mzData,dzData), fullVarNames = colTypes$ordVarNames,
+      sep = sep, method=method)
+    ordinalPresent = TRUE
+  }
+
+
+  if (!missing(mzData)) {mzData = xmu_make_mxData(mzData, manifests = c(vnames, indVar))}
+  if (!missing(dzData)) {dzData = xmu_make_mxData(dzData, manifests = c(vnames, indVar))}
+
+  if (length(prss) == 1) {
+    if (is.null(name)) { name = "MRDoC"}
+
+    top <- mxModel("top",
+      umxMatrix("filter",
+        type = "Full", nrow = 5, ncol = 6, free = FALSE, byrow = TRUE,
+        values = c(
+          1, 0, 0, 0, 0, 0,
+          0, 1, 0, 0, 0, 0,
+          0, 0, 1, 0, 0, 0,
+          0, 0, 0, 1, 0, 0,
+          0, 0, 0, 0, 1, 0
+        )
+      ),
+      mxMatrix(name = "I", type = "Iden", nrow = 3, ncol = 3),
+      umxMatrixFree("B",
+        type = "Full", nrow = 3, ncol = 3,
+        labels = c(
+          NA, "g2", "b1",
+          "g1", NA, "b2",
+          NA, NA, NA
+        ),
+        values = c(
+          0, .1, .11,
+          .2, 0, .15,
+          0, 0, 0
+        )
+      ),
+      umxMatrix("psi_a", type = "Symm", ncol = 3, nrow = 3, byrow = TRUE,
+        labels = c(
+          "ax2",
+          "ra", "ay2",
+          NA, NA, "prsx2"
+        ),
+        free = c(
+          T,
+          T, T,
+          F, F, F
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 1
+        ),
+      ),
+      umxMatrixFree("psi_c", type = "Symm", ncol = 3, nrow = 3,
+        labels = c(
+          "cx2",
+          "rc", "cy2",
+          NA, NA, NA
+        ),values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0
+        ),
+      ),
+      umxMatrixFree("psi_e", type = "Symm", ncol = 3, nrow = 3,
+        labels = c(
+          "ex2",
+          "re", "ey2",
+          NA, NA, NA
+        ),values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0
+        ),
+      ),
+      umxMatrix("lamba",
+        type = "Diag", nrow = 3, ncol = 3, byrow = TRUE,
+        free = c(F, F, T), labels = c("σ1", "σ2", "σ3"),
+        values = c(1, 1, 1)
+      ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+      mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+      mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+      mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+      mxAlgebra("CovMZ", expression = filter %&% rbind(
+        cbind(A + C + E, A + C),
+        cbind(A + C, A + C + E)
+      )),
+      mxAlgebra("CovDZ", expression = rbind(
+        cbind(A + C + E, 0.5 %x% A + C),
+        cbind(0.5 %x% A + C, A + C + E)
+      )),
+      mxAlgebra("VC", expression = cbind(A, C, E, A / (A + C + E),
+          C / (A + C + E),
+          E / (A + C + E)),
+        dimnames = list(
+          rep("VC", 3),
+          rep(c("A", "C", "E", "SA", "SC", "SE"), each = 3)
+        )
+      ),
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( type="Full", nrow=1, ncol=3, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs"),
+      name="meanT1" ),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2MZ"),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix( type="Full", nrow=1, ncol=3, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs"),
+      name="meanT2DZ" )
+     )
+
+     expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+     expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+     expMZ = mxExpectationNormal("top.CovMZ",
+      means = "expMeanMZ", vnames[1:5])
+     expDZ =  mxExpectationNormal("top.CovDZ",
+      means =  "expMeanDZ", vnames)
+
+    if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames[1:5],
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ, mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ, mxFitFunctionML())
+
+    if (ordinalPresent)   top = mxModel(top, ty)
+
+    if (!sketch){
+      MZ = mxModel(MZ, mzData)
+      DZ = mxModel(DZ, dzData)
+    }
+
+    model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c( "MZ","DZ") ))
+    model = umxModify(model,  update = c("g2",   "re"), autoRun = F)
+    if (!sketch) model = mxAutoStart(model)
+
+  # Means according to presence of definition vars
+    if (!is.null(covar)) {
+      expMeanMZ <- mxAlgebra("expMeanMZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2MZ + t(bCov[1:2,] %*%dCov2)))
+
+      expMeanDZ <- mxAlgebra("expMeanDZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2DZ + t(bCov%*%dCov2)))
+
+## Matrix to hold definition variables for the regression
+      # Twin 1
+      dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+       name = "dCov1" )
+      # Twin 2
+      dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+       name = "dCov2" )
+
+      # Matrix to hold betas for the covariates
+      # row 1 = pheno 1 (smk)
+      # row 2 = pheno 2 (cpg)
+      # row 3 = prs (betas fixed at zero)
+      bCov <- mxMatrix( type = "Full", nrow = 3, ncol = nCov,
+        free = c(rep(T,nCov),              # X  - regressed on covariates
+         rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+        values = c(rep(0,nCov*3)), byrow = T,
+        labels = c(paste("bX",covar,sep="_"),
+         paste("bY",covar,sep="_"),
+         rep(NA,nCov)),
+        name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    }
+
+
+   } else if (length(prss) == 2) {
+    if (is.null(name)) { name = "MRDoC2"}
+
+    top <- mxModel("top",
+      umxMatrix("filter",
+        type = "Full", nrow = 6, ncol = 8, free = FALSE, byrow = TRUE,
+        values = c(
+          1, 0, 0, 0, 0, 0, 0, 0,
+          0, 1, 0, 0, 0, 0, 0, 0,
+          0, 0, 1, 0, 0, 0, 0, 0,
+          0, 0, 0, 1, 0, 0, 0, 0,
+          0, 0, 0, 0, 1, 0, 0, 0,
+          0, 0, 0, 0, 0, 1, 0, 0
+        )
+      ),
+      mxMatrix(name ="I", type = "Iden", nrow = 4, ncol = 4),
+      umxMatrixFree("B",
+        type = "Full", nrow = 4, ncol = 4,
+        labels = c(
+          NA, "g2", "b1", "b4",
+          "g1", NA, "b2", "b3",
+          NA, NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0, 0.1, 0.1, 0.1,
+          0.1, 0, 0.1, 0.1,
+          0, 0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrix("psi_a", type = "Symm", ncol = 4, nrow = 4, byrow = TRUE,
+        labels = c(
+          "ax2",
+          "ra", "ay2",
+          NA, NA, "prsx2",
+          NA, NA, "rf", "prsy2"
+        ),
+        free = c(
+          T,
+          T, T,
+          F, F, F,
+          F, F, T, F
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 1,
+          0, 0, 0.05, 1
+        ),
+      ),
+      umxMatrixFree("psi_c", type = "Symm", ncol = 4, nrow = 4,
+        labels = c(
+          "cx2",
+          "rc", "cy2",
+          NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrixFree("psi_e", type = "Symm", ncol = 4, nrow = 4, byrow = TRUE,
+        labels = c(
+          "ex2",
+          "re", "ey2",
+          NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrix("lamba", type = "Diag", nrow = 4, ncol = 4,
+        free = c(F, F, T, T), labels = c("σ1", "σ2", "σ3", "σ4"),
+        values = c(1, 1, 1, 1)
+      ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+      mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+      mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+      mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+      mxAlgebra("CovMZ", expression = filter %&% rbind(
+        cbind(A + C + E, A + C),
+        cbind(A + C, A + C + E)
+      )),
+      mxAlgebra(name = "CovDZ", expression = rbind(
+        cbind(A + C + E, 0.5 %x% A + C),
+        cbind(0.5 %x% A + C, A + C + E)
+      )),
+      mxAlgebra(
+        name = "VC", expression = cbind(A, C, E, A / (A + C + E),
+          C / (A + C + E), E / (A + C + E)),
+        dimnames = list(
+          rep("VC", 4),
+          rep(c("A", "C", "E", "SA", "SC", "SE"), each = 4)
+        )
+      ),
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( name = "meanT1", type="Full", nrow=1, ncol=4, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2")),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix(name ="meanT2MZ", type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2")),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix(name ="meanT2DZ", type="Full", nrow=1, ncol=4, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2"))
+     )
+
+ expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+    expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+       expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ", vnames[1:6])
+
+      expDZ = mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ", vnames)
+
+    if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames[1:6],
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ,  mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ,  mxFitFunctionML())
+
+    if (ordinalPresent)  top = mxModel(top, ty)
+
+    if (!sketch){
+      MZ = mxModel(MZ, mzData)
+      DZ = mxModel(DZ, dzData)
+    }
+
+    model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c("MZ","DZ") ))
+    model = umxModify(model,  update = c("b2", "b4"), autoRun = F)
+    if (!sketch) model = mxAutoStart(model)
+
+  # Means according to presence of definition vars
+  if (!is.null(covar)) {
+    expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2MZ + t(bCov[1:2,] %*% dCov2)))
+
+    expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2DZ + t(bCov%*%dCov2)))
+          ## Matrix to hold definition variables for the regression
+      # Twin 1
+      dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+       name = "dCov1" )
+      # Twin 2
+      dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+       name = "dCov2" )
+
+    # Matrix to hold betas for the covariates
+    # row 1 = pheno 1 (smk)
+    # row 2 = pheno 2 (cpg)
+    # row 3 = prs (betas fixed at zero)
+      bCov <- mxMatrix( type = "Full", nrow = 4, ncol = nCov,
+        free = c(rep(T,nCov),                      # X  - regressed on covariates
+         rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov),                     # PRS  - not regressed on any covariate (exogenous IV)
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+        values = c(rep(0,nCov*4)), byrow = T,
+        labels = c(paste("bX",covar,sep="_"),
+         paste("bY",covar,sep="_"),
+         rep(NA,nCov),
+         rep(NA,nCov)),
+        name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+
+  }
+
+  } else if (length(prss) == 0) {
+    if (is.null(name)) { name = "DoC"}
+
+   top = mxModel("top",
+    mxMatrix(name = "I", type = "Iden", nrow = 2, ncol = 2),
+    umxMatrixFree("B",
+      type = "Full", nrow = 2, ncol = 2,
+      labels = c(
+        NA, "g2",
+        "g1", NA
+      )
+    ),
+    umxMatrix("psi_a", type = "Symm", ncol = 2, nrow = 2, byrow = TRUE,
+      labels = c(
+        "ax2",
+        "ra", "ay2"
+      ),
+      free = c(
+        T,
+        T, T
+      ),
+      values = c(
+        0.1,
+        0.05, 0.1
+      ),
+    ),
+    umxMatrixFree("psi_c", type = "Symm", ncol = 2, nrow = 2,
+      labels = c(
+        "cx2",
+        "rc", "cy2"
+      ),
+    ),
+    umxMatrixFree("psi_e", type = "Symm", ncol = 2, nrow = 2,
+      labels = c(
+        "ex2",
+        "re", "ey2"
+      ),
+    ),
+    umxMatrix("lamba", type = "Diag", nrow = 2, ncol = 2, byrow = TRUE,
+      free = c(F, F), labels = c("σ1", "σ2"),
+      values = c(1, 1)
+    ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+    mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+    mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+    mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+    mxAlgebra("CovMZ", expression =  rbind(
+      cbind(A + C + E, A + C),
+      cbind(A + C, A + C + E)
+    )),
+    mxAlgebra(name = "CovDZ", expression = rbind(
+      cbind(A + C + E, 0.5 %x% A + C),
+      cbind(0.5 %x% A + C, A + C + E)
+    )),
+    mxAlgebra("VC", expression = cbind(A, C, E, A / (A + C + E),
+     C / (A + C + E), E / (A + C + E)),
+      dimnames = list(
+        rep("VC", 2),
+        rep(c("A", "C", "E", "SA", "SC", "SE"), each = 2)
+      )
+    ) ,
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( type="Full", nrow=1, ncol=2, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT1" ),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2MZ"),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2DZ" )
+     )
+
+    expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+     expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+       expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ", vnames)
+
+      expDZ = mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ", vnames)
+
+ if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ, mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ, mxFitFunctionML())
+
+    if (ordinalPresent)   top = mxModel(top, ty)
+
+  if (!sketch){
+    MZ = mxModel(MZ, mzData)
+    DZ = mxModel(DZ, dzData)
+  }
+
+  model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c("MZ","DZ") ))
+  model = umxModify(model,  update = c("g2",  "re"), autoRun = F)
+  ## if (!sketch) model = mxAutoStart(model)
+
+  ## Means according to presence of definition vars
+    if (!is.null(covar)) {
+      expMeanMZ <- mxAlgebra("expMeanMZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2MZ + t(bCov[1:2,] %*%dCov2)))
+
+      expMeanDZ <- mxAlgebra("expMeanDZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2DZ + t(bCov%*%dCov2)))
+           ## Matrix to hold definition variables for the regression
+      # Twin 1
+    dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+     labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+     name = "dCov1" )
+      # Twin 2
+    dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+     labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+     name = "dCov2" )
+
+    # Matrix to hold betas for the covariates
+    # row 1 = pheno 1 (smk)
+    # row 2 = pheno 2 (cpg)
+    # row 3 = prs (betas fixed at zero)
+    bCov <- mxMatrix( type = "Full", nrow = 2, ncol = nCov,
+      free = c(rep(T,nCov),     # X  - regressed on covariates
+       rep(T,nCov)),            # Y  - regressed on covariates
+      values = c(rep(0,nCov*2)), byrow = T,
+      labels = c(paste("bX",covar,sep="_"),
+       paste("bY",covar,sep="_")),
+      name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    }
+
+} else {
+  stop("Only 1 or 2 PRSs are supported")
+}
+
+model = as(model, "MxModelMRDoC") # set class so that S3s dispatch e.g. plot()
+
+if (sketch == F){
+    model  = xmu_safe_run_summary(model, autoRun = autoRun,  summary = summary, tryHard =  tryHard)
+}
+
+return(model)
+}
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output none
+umxMRDoC2 <- function(pheno, prss = NULL, mzData = NULL, dzData = NULL, sibsData = NULL, data = NULL, zyg = "zyg",
+                      sep = "_T", summary = !umx_set_silent(silent = TRUE), name = NULL,
+                      autoRun = getOption("umx_auto_run"), sibs = FALSE,
+                      tryHard = c("no", "yes", "ordinal", "search"), optimizer = NULL,  covar = NULL,
+                      method = "Mehta") {
+
+  umx_set_silent(silent = TRUE)
+  tryHard = match.arg(tryHard)
+  sketch = FALSE
+  indVar = NULL
+  ordinalPresent = FALSE
+  # Below, trick to be able to use sketch model
+  colTypes = NULL
+  colTypes$nOrdVars = 0
+
+  if (missing(data) && missing(mzData) && missing(dzData)) sketch = TRUE
+
+   ## message(data %>% filter(zyg=="sib") %>% summarise(n=n()))
+
+  ## if (!is.null(covar)) {
+  ##   nCov   <- length(covar)
+  ##   indVar <- paste(covar,c(rep(1,nCov),rep(2,nCov)),sep=sep)
+  ##   # remove NAs from covariates
+  ##   if (!is.null(data)) {
+  ##     data <- data[complete.cases(data[,c(indVar)]),]
+  ##     warning("Dropped rows with missing covars.")
+  ##   }
+  ## }
+
+
+  if (!is.null(covar)) {
+    nCov   <- length(covar)
+    indVar <- paste(covar,c(rep(1,nCov),rep(2,nCov)),sep=sep)
+    # remove NAs from covariates
+    if (!is.null(data)) {
+        for (ind in indVar) {
+            for (p in pheno) {
+              # Create the phenotype variable name
+              p_var <- paste0(p, "_", substr(ind, nchar(ind)-2+1, nchar(ind)))
+              # Update the indicator variable only if it is NA
+              data[[ind]][is.na(data[[ind]]) & (!is.na(data[[p_var]]))] <- 99999
+              }
+        }
+      data <- data[complete.cases(data[,c(indVar)]),]
+      warning("Dropped rows with missing covars")
+    }
+  }
+
+   ## message(data %>% filter(zyg=="sib") %>% summarise(n=n()))
+    # Managing data
+  if (!is.null(data)) {
+    if ("tbl" %in% class(data)) {
+      data = as.data.frame(data)
+    }
+    mzData = data[data[, zyg] %in% ifelse(is.null(mzData), "MZ", mzData), ]
+    dzData = data[data[, zyg] %in% ifelse(is.null(dzData), "DZ", dzData), ]
+    if (sibs) sibsData = data %>% filter(zyg=="sib")
+
+  } else {
+    if ("tbl" %in% class(mzData)) {
+      mzData = as.data.frame(mzData)
+      dzData = as.data.frame(dzData)
+    }
+  }
+
+   ## message(sibsData %>% summarise(n=n()))
+  vnames = tvars(c(pheno, prss), sep = sep)
+
+  if (!sketch){
+    xmu_twin_check(
+      selDVs = c(pheno, prss),
+      sep = sep, dzData = dzData, mzData = mzData, enforceSep = TRUE,
+      nSib = 2, optimizer = optimizer
+    )
+
+  # Find ordinal variables
+  colTypes = umx_is_ordered(xmu_extract_column(mzData, vnames),
+   summaryObject= TRUE)
+  }
+
+   if (colTypes$nOrdVars > 0){
+    ty = umxThresholdMatrix( rbind(mzData,dzData), fullVarNames = colTypes$ordVarNames,
+      sep = sep, method=method)
+    if (sibs) {
+      ty = umxThresholdMatrix( rbind(mzData,dzData, sibsData), fullVarNames = colTypes$ordVarNames,
+      sep = sep, method=method)
+    }
+    ordinalPresent = TRUE
+  }
+
+
+  if (!missing(mzData)) {mzData = xmu_make_mxData(mzData, manifests = c(vnames, indVar))}
+  if (!missing(dzData)) {dzData = xmu_make_mxData(dzData, manifests = c(vnames, indVar))}
+  if (!missing(sibsData)) {sibsData = xmu_make_mxData(sibsData, manifests = c(vnames, indVar))}
+
+  if (length(prss) == 1) {
+    if (is.null(name)) { name = "MRDoC"}
+
+    top <- mxModel("top",
+      umxMatrix("filter",
+        type = "Full", nrow = 5, ncol = 6, free = FALSE, byrow = TRUE,
+        values = c(
+          1, 0, 0, 0, 0, 0,
+          0, 1, 0, 0, 0, 0,
+          0, 0, 1, 0, 0, 0,
+          0, 0, 0, 1, 0, 0,
+          0, 0, 0, 0, 1, 0
+        )
+      ),
+      mxMatrix(name = "I", type = "Iden", nrow = 3, ncol = 3),
+      umxMatrixFree("B",
+        type = "Full", nrow = 3, ncol = 3,
+        labels = c(
+          NA, "g2", "b1",
+          "g1", NA, "b2",
+          NA, NA, NA
+        ),
+        values = c(
+          0, .1, .11,
+          .2, 0, .15,
+          0, 0, 0
+        )
+      ),
+      umxMatrix("psi_a", type = "Symm", ncol = 3, nrow = 3, byrow = TRUE,
+        labels = c(
+          "ax2",
+          "covA", "ay2",
+          NA, NA, "prsx2"
+        ),
+        free = c(
+          T,
+          T, T,
+          F, F, F
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 1
+        ),
+      ),
+      umxMatrixFree("psi_c", type = "Symm", ncol = 3, nrow = 3,
+        labels = c(
+          "cx2",
+          "covC", "cy2",
+          NA, NA, NA
+        ),values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0
+        ),
+      ),
+      umxMatrixFree("psi_e", type = "Symm", ncol = 3, nrow = 3,
+        labels = c(
+          "ex2",
+          "covE", "ey2",
+          NA, NA, NA
+        ),values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0
+        ),
+      ),
+      umxMatrix("lamba",
+        type = "Diag", nrow = 3, ncol = 3, byrow = TRUE,
+        free = c(F, F, T), labels = c("σ1", "σ2", "σ3"),
+        values = c(1, 1, 1)
+      ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+      mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+      mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+      mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+      mxAlgebra("CovMZ", expression = filter %&% rbind(
+        cbind(A + C + E, A + C),
+        cbind(A + C, A + C + E)
+      )),
+      mxAlgebra("CovDZ", expression = rbind(
+        cbind(A + C + E, 0.5 %x% A + C),
+        cbind(0.5 %x% A + C, A + C + E)
+      )),
+      mxAlgebra("VC", expression = cbind(A, C, E, A / (A + C + E),
+          C / (A + C + E),
+          E / (A + C + E)),
+        dimnames = list(
+          rep("VC", 3),
+          rep(c("A", "C", "E", "SA", "SC", "SE"), each = 3)
+        )
+      ),
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( type="Full", nrow=1, ncol=3, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs"),
+      name="meanT1" ),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2MZ"),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix( type="Full", nrow=1, ncol=3, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs"),
+      name="meanT2DZ" )
+     )
+
+     expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+     expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+     expMZ = mxExpectationNormal("top.CovMZ",
+      means = "expMeanMZ", vnames[1:5])
+     expDZ =  mxExpectationNormal("top.CovDZ",
+      means =  "expMeanDZ", vnames)
+
+    if (sibs){
+
+Ts <-  mxMatrix(name = 'Ts', type='Symm', nrow=3, ncol = 3,byrow = TRUE,
+               labels =c("tx2", "covT",NA,
+                         "covT","ty2" ,NA,
+                         NA,    NA,    NA),
+               values = c(.4, 0, 0,
+                    0,.4, 0,
+                    0,0,0),
+               free= c(TRUE,TRUE,  FALSE,
+                       TRUE, TRUE, FALSE,
+                       FALSE,FALSE,FALSE),
+               dimnames = list(c("X", "Y", "iX"),
+                               c("X", "Y", "iX")))
+
+     expMeanSib <- mxAlgebra("expMeanSib",
+      expression = cbind(top.meanT1 ,
+       top.meanT2sib ))
+
+
+expSib =  mxExpectationNormal("top.CovSib",
+      means =  "expMeanSib", vnames)
+
+
+top <- mxModel(top, Ts,
+  mxMatrix( name="K", type="Full", nrow=1, ncol=1, free=FALSE, values=0.5, labels="k"),
+  mxAlgebra('Ts_'  , expression = lamba %&% solvBE %&% Ts),
+               mxAlgebra('CovMZ_', expression=rbind(
+    cbind(A+C+E+Ts_, A + C+ Ts_),
+    cbind(A + C+ Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovDZ', expression=rbind(
+    cbind(A+C+E+Ts_, K%x%A + C + Ts_),
+    cbind(K%x%A + C + Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovSib', expression=rbind(
+    cbind(A+C+E+Ts_, K%x%A + C),
+    cbind(K%x%A + C, A+C+E+Ts_))),
+   mxAlgebra('CovMZ', expression= filter%&%CovMZ_),
+  mxMatrix(name ="meanT2sib", type="Full", nrow=1, ncol=3, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs")))
+
+    }
+
+    if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames[1:5],
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+      if (sibs) {
+      expSib = mxExpectationNormal("top.CovSib",
+          means = "expMeanSib",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+      }
+
+
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ, mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ, mxFitFunctionML())
+    if (sibs) sibsM = mxModel("Sibs", expMeanSib, expSib, mxFitFunctionML())
+
+    if (ordinalPresent)   top = mxModel(top, ty)
+
+    if (!sketch){
+      MZ = mxModel(MZ, mzData)
+      DZ = mxModel(DZ, dzData)
+      if (sibs) sibsM = mxModel(sibsM, sibsData)
+    }
+
+    model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c( "MZ","DZ") ))
+    if (sibs) model = mxModel(name, top, MZ, DZ,sibsM, mxFitFunctionMultigroup(c( "MZ","DZ", "Sibs")) )
+
+    model = umxModify(model,  update = c("g2",   "covE"), autoRun = F)
+
+    ## if (!sketch) model = mxAutoStart(model)
+
+  # Means according to presence of definition vars
+    if (!is.null(covar)) {
+      expMeanMZ <- mxAlgebra("expMeanMZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2MZ + t(bCov[1:2,] %*%dCov2)))
+
+      expMeanDZ <- mxAlgebra("expMeanDZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2DZ + t(bCov%*%dCov2)))
+
+      if (sibs) {
+         expMeanSib <- mxAlgebra("expMeanSib",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2sib + t(bCov%*%dCov2)))
+      }
+
+## Matrix to hold definition variables for the regression
+      # Twin 1
+      dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+       name = "dCov1" )
+      # Twin 2
+      dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+       name = "dCov2" )
+
+      # Matrix to hold betas for the covariates
+      # row 1 = pheno 1 (smk)
+      # row 2 = pheno 2 (cpg)
+      # row 3 = prs (betas fixed at zero)
+      bCov <- mxMatrix( type = "Full", nrow = 3, ncol = nCov,
+        free = c(rep(T,nCov),              # X  - regressed on covariates
+         rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+        values = c(rep(0,nCov*3)), byrow = T,
+        labels = c(paste("bX",covar,sep="_"),
+         paste("bY",covar,sep="_"),
+         rep(NA,nCov)),
+        name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+      if (sibs) {
+        model$Sibs =  mxModel(model$Sibs, expMeanSib, expSib, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+      }
+        }
+
+
+   } else if (length(prss) == 2) {
+    if (is.null(name)) { name = "MRDoC2"}
+
+    top <- mxModel("top",
+      umxMatrix("filter",
+        type = "Full", nrow = 6, ncol = 8, free = FALSE, byrow = TRUE,
+        values = c(
+          1, 0, 0, 0, 0, 0, 0, 0,
+          0, 1, 0, 0, 0, 0, 0, 0,
+          0, 0, 1, 0, 0, 0, 0, 0,
+          0, 0, 0, 1, 0, 0, 0, 0,
+          0, 0, 0, 0, 1, 0, 0, 0,
+          0, 0, 0, 0, 0, 1, 0, 0
+        )
+      ),
+      mxMatrix(name ="I", type = "Iden", nrow = 4, ncol = 4),
+      umxMatrixFree("B",
+        type = "Full", nrow = 4, ncol = 4,
+        labels = c(
+          NA, "g2", "b1", "b4",
+          "g1", NA, "b2", "b3",
+          NA, NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0, 0.1, 0.1, 0.1,
+          0.1, 0, 0.1, 0.1,
+          0, 0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrix("psi_a", type = "Symm", ncol = 4, nrow = 4, byrow = TRUE,
+        labels = c(
+          "ax2",
+          "covA", "ay2",
+          NA, NA, "prsx2",
+          NA, NA, "rf", "prsy2"
+        ),
+        free = c(
+          T,
+          T, T,
+          F, F, F,
+          F, F, T, F
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 1,
+          0, 0, 0.05, 1
+        ),
+      ),
+      umxMatrixFree("psi_c", type = "Symm", ncol = 4, nrow = 4,
+        labels = c(
+          "cx2",
+          "covC", "cy2",
+          NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrixFree("psi_e", type = "Symm", ncol = 4, nrow = 4, byrow = TRUE,
+        labels = c(
+          "ex2",
+          "covE", "ey2",
+          NA, NA, NA,
+          NA, NA, NA, NA
+        ),
+        values = c(
+          0.1,
+          0.05, 0.1,
+          0, 0, 0,
+          0, 0, 0, 0
+        ),
+      ),
+      umxMatrix("lamba", type = "Diag", nrow = 4, ncol = 4,
+        free = c(F, F, T, T), labels = c("σ1", "σ2", "σ3", "σ4"),
+        values = c(1, 1, 1, 1)
+      ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+      mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+      mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+      mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+      mxAlgebra("CovMZ", expression = filter %&% rbind(
+        cbind(A + C + E, A + C),
+        cbind(A + C, A + C + E)
+      )),
+      mxAlgebra(name = "CovDZ", expression = rbind(
+        cbind(A + C + E, 0.5 %x% A + C),
+        cbind(0.5 %x% A + C, A + C + E)
+      )),
+      mxAlgebra(
+        name = "VC", expression = cbind(A, C, E, A / (A + C + E),
+          C / (A + C + E), E / (A + C + E)),
+        dimnames = list(
+          rep("VC", 4),
+          rep(c("A", "C", "E", "SA", "SC", "SE"), each = 4)
+        )
+      ),
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( name = "meanT1", type="Full", nrow=1, ncol=4, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2")),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix(name ="meanT2MZ", type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2")),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix(name ="meanT2DZ", type="Full", nrow=1, ncol=4, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2"))
+     )
+
+ expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+    expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+       expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ", vnames[1:6])
+
+      expDZ = mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ", vnames)
+
+    if (sibs){
+
+Ts <-  mxMatrix(name = 'Ts', type='Symm', nrow=4, ncol = 4,byrow = TRUE,
+               labels =c("tx2", "covT",NA, NA,
+                         "covT","ty2" ,NA, NA,
+                         NA,    NA,    NA, NA,
+                         NA,    NA,    NA,NA),
+               values = c(.4, 0, 0, 0,
+                    0,.4, 0, 0,
+                    0,0, 0, 0,
+                    0,0,0, 0),
+               free= c(TRUE,TRUE,  FALSE, FALSE,
+                       TRUE, TRUE, FALSE, FALSE,
+                       FALSE, FALSE, FALSE, FALSE,
+                       FALSE,FALSE,FALSE, FALSE),
+               dimnames = list(c("X", "Y", "iX", "iY"),
+                               c("X", "Y", "iX", "iY")))
+
+     expMeanSib <- mxAlgebra("expMeanSib",
+      expression = cbind(top.meanT1 ,
+       top.meanT2sib ))
+
+
+expSib =  mxExpectationNormal("top.CovSib",
+      means =  "expMeanSib", vnames)
+
+
+top <- mxModel(top, Ts,
+  mxMatrix( name="K", type="Full", nrow=1, ncol=1, free=FALSE, values=0.5, labels="k"), #still locally identified with freely estimated "k"
+  mxAlgebra('Ts_'  , expression = lamba %&% solvBE %&% Ts),
+               mxAlgebra('CovMZ_', expression=rbind(
+    cbind(A+C+E+Ts_, A + C+ Ts_),
+    cbind(A + C+ Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovDZ', expression=rbind(
+    cbind(A+C+E+Ts_, K%x%A + C + Ts_),
+    cbind(K%x%A + C + Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovSib', expression=rbind(
+    cbind(A+C+E+Ts_, K%x%A + C),
+    cbind(K%x%A + C, A+C+E+Ts_))),
+   mxAlgebra('CovMZ', expression= filter%&%CovMZ_),
+  mxMatrix(name ="meanT2sib", type="Full", nrow=1, ncol=4, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1","mean_prs2")))
+
+    }
+
+
+    if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames[1:6],
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+      if (sibs) {
+      expSib = mxExpectationNormal("top.CovSib",
+          means = "expMeanSib",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+      }
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ,  mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ,  mxFitFunctionML())
+
+   if (sibs) sibsM = mxModel("Sibs", expMeanSib, expSib, mxFitFunctionML())
+
+    if (ordinalPresent)   top = mxModel(top, ty)
+
+    if (!sketch){
+      MZ = mxModel(MZ, mzData)
+      DZ = mxModel(DZ, dzData)
+      if (sibs) sibsM = mxModel(sibsM, sibsData)
+    }
+
+    model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c( "MZ","DZ") ))
+    if (sibs) model = mxModel(name, top, MZ, DZ,sibsM, mxFitFunctionMultigroup(c( "MZ","DZ", "Sibs")) )
+
+    model = umxModify(model,  update = c("b2", "b4"), autoRun = F)
+    ## if (!sketch) model = mxAutoStart(model)
+
+  # Means according to presence of definition vars
+  if (!is.null(covar)) {
+    expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2MZ + t(bCov[1:2,] %*% dCov2)))
+
+    expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2DZ + t(bCov%*%dCov2)))
+          ## Matrix to hold definition variables for the regression
+      # Twin 1
+      dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+       name = "dCov1" )
+      # Twin 2
+      dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+       name = "dCov2" )
+
+    # Matrix to hold betas for the covariates
+    # row 1 = pheno 1 (smk)
+    # row 2 = pheno 2 (cpg)
+    # row 3 = prs (betas fixed at zero)
+      bCov <- mxMatrix( type = "Full", nrow = 4, ncol = nCov,
+        free = c(rep(T,nCov),                      # X  - regressed on covariates
+         rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov),                     # PRS  - not regressed on any covariate (exogenous IV)
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+        values = c(rep(0,nCov*4)), byrow = T,
+        labels = c(paste("bX",covar,sep="_"),
+         paste("bY",covar,sep="_"),
+         rep(NA,nCov),
+         rep(NA,nCov)),
+        name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+if (sibs) {
+        model$Sibs =  mxModel(model$Sibs, expMeanSib, expSib, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+      }
+  }
+
+  } else if (length(prss) == 0) {
+    if (is.null(name)) { name = "DoC"}
+
+   top = mxModel("top",
+    mxMatrix(name = "I", type = "Iden", nrow = 2, ncol = 2),
+    umxMatrixFree("B",
+      type = "Full", nrow = 2, ncol = 2,
+      labels = c(
+        NA, "g2",
+        "g1", NA
+      )
+    ),
+    umxMatrix("psi_a", type = "Symm", ncol = 2, nrow = 2, byrow = TRUE,
+      labels = c(
+        "ax2",
+        "covA", "ay2"
+      ),
+      free = c(
+        T,
+        T, T
+      ),
+      values = c(
+        0.1,
+        0.05, 0.1
+      ),
+    ),
+    umxMatrixFree("psi_c", type = "Symm", ncol = 2, nrow = 2,
+      labels = c(
+        "cx2",
+        "covC", "cy2"
+      ),
+    ),
+    umxMatrixFree("psi_e", type = "Symm", ncol = 2, nrow = 2,
+      labels = c(
+        "ex2",
+        "covE", "ey2"
+      ),
+    ),
+    umxMatrix("lamba", type = "Diag", nrow = 2, ncol = 2, byrow = TRUE,
+      free = c(F, F), labels = c("σ1", "σ2"),
+      values = c(1, 1)
+    ),
+  mxAlgebra('solvBE'  , expression =  solve(I - B) ),
+    mxAlgebra("A", expression = lamba %&% solvBE %&% psi_a),
+    mxAlgebra("C", expression = lamba %&% solvBE %&% psi_c),
+    mxAlgebra("E", expression = lamba %&% solvBE %&% psi_e),
+    mxAlgebra("CovMZ", expression =  rbind(
+      cbind(A + C + E, A + C),
+      cbind(A + C, A + C + E)
+    )),
+    mxAlgebra(name = "CovDZ", expression = rbind(
+      cbind(A + C + E, 0.5 %x% A + C),
+      cbind(0.5 %x% A + C, A + C + E)
+    )),
+    mxAlgebra("VC", expression = cbind(A, C, E, A / (A + C + E),
+     C / (A + C + E), E / (A + C + E)),
+      dimnames = list(
+        rep("VC", 2),
+        rep(c("A", "C", "E", "SA", "SC", "SE"), each = 2)
+      )
+    ) ,
+    # create algebra for expected mean & threshold matrices
+    mxMatrix( type="Full", nrow=1, ncol=2, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT1" ),
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2MZ"),
+    # in dz twins, prs_twin1 != prs_twin2
+    mxMatrix( type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"),
+      name="meanT2DZ" )
+     )
+
+    expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2MZ ))
+
+     expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 ,
+       top.meanT2DZ ))
+
+       expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ", vnames)
+
+      expDZ = mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ", vnames)
+
+    if (sibs){
+
+Ts <-  mxMatrix(name = 'Ts', type='Symm', nrow=2, ncol = 2,byrow = TRUE,
+               labels =c("tx2", "covT",
+                         "covT","ty2" ),
+               values = c(.4, 0,
+                    0,.4),
+               free= c(TRUE,TRUE,
+                       TRUE, TRUE),
+               dimnames = list(c("X", "Y"),
+                               c("X", "Y")))
+
+     expMeanSib <- mxAlgebra("expMeanSib",
+      expression = cbind(top.meanT1 ,
+       top.meanT2sib ))
+
+expSib =  mxExpectationNormal("top.CovSib",
+      means =  "expMeanSib", vnames)
+
+top <- mxModel(top, Ts,
+  mxMatrix( name="K", type="Full", nrow=1, ncol=1, free=FALSE, values=0.5, labels="k"), #still locally identified with freely estimated "k"
+  mxAlgebra('Ts_'  , expression = lamba %&% solvBE %&% Ts),
+               mxAlgebra('CovMZ', expression=rbind(
+    cbind(A+C+E+Ts_, A + C+ Ts_),
+    cbind(A + C+ Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovDZ', expression=rbind(
+    cbind(A+C+E+Ts_, 0.5%x%A + C + Ts_),
+    cbind(0.5%x%A + C + Ts_, A+C+E+Ts_))),
+  mxAlgebra('CovSib', expression=rbind(
+    cbind(A+C+E+Ts_, K%x%A + C),
+    cbind(K%x%A + C, A+C+E+Ts_))),
+  mxMatrix(name ="meanT2sib", type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2")))
+
+    }
+
+
+ if(colTypes$nOrdVars > 0){
+      expMZ =  mxExpectationNormal("top.CovMZ",
+          means = "expMeanMZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.CovDZ",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+      if (sibs) {
+      expSib = mxExpectationNormal("top.CovSib",
+          means = "expMeanSib",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+      }
+    }
+
+    MZ = mxModel("MZ", expMeanMZ, expMZ, mxFitFunctionML())
+    DZ = mxModel("DZ", expMeanDZ, expDZ, mxFitFunctionML())
+   if (sibs) sibsM = mxModel("Sibs", expMeanSib, expSib, mxFitFunctionML())
+    if (ordinalPresent)   top = mxModel(top, ty)
+
+    if (!sketch){
+      MZ = mxModel(MZ, mzData)
+      DZ = mxModel(DZ, dzData)
+      if (sibs) sibsM = mxModel(sibsM, sibsData)
+    }
+
+    model = mxModel(name, top, MZ, DZ, mxFitFunctionMultigroup(c( "MZ","DZ") ))
+    if (sibs) model = mxModel(name, top, MZ, DZ,sibsM, mxFitFunctionMultigroup(c( "MZ","DZ", "Sibs")) )
+
+  model = umxModify(model,  update = c("g2",  "covE"), autoRun = F)
+  ## if (!sketch) model = mxAutoStart(model)
+
+  ## Means according to presence of definition vars
+    if (!is.null(covar)) {
+      expMeanMZ <- mxAlgebra("expMeanMZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2MZ + t(bCov[1:2,] %*%dCov2)))
+
+      expMeanDZ <- mxAlgebra("expMeanDZ",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2DZ + t(bCov%*%dCov2)))
+           ## Matrix to hold definition variables for the regression
+      # Twin 1
+    dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+     labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+     name = "dCov1" )
+      # Twin 2
+    dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+     labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+     name = "dCov2" )
+
+    # Matrix to hold betas for the covariates
+    # row 1 = pheno 1 (smk)
+    # row 2 = pheno 2 (cpg)
+    # row 3 = prs (betas fixed at zero)
+    bCov <- mxMatrix( type = "Full", nrow = 2, ncol = nCov,
+      free = c(rep(T,nCov),     # X  - regressed on covariates
+       rep(T,nCov)),            # Y  - regressed on covariates
+      values = c(rep(0,nCov*2)), byrow = T,
+      labels = c(paste("bX",covar,sep="_"),
+       paste("bY",covar,sep="_")),
+      name = "bCov" )
+
+    model$MZ = mxModel(model$MZ, expMeanMZ, expMZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+    model$DZ = mxModel(model$DZ, expMeanDZ, expDZ, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+      if (sibs) {
+        model$Sibs =  mxModel(model$Sibs, expMeanSib, expSib, mxFitFunctionML(),
+                       dCov1, dCov2, bCov)
+      }
+    }
+
+} else {
+  stop("Only 1 or 2 PRSs are supported")
+}
+
+model = as(model, "MxModelMRDoC") # set class so that S3s dispatch e.g. plot()
+
+if (sketch == F){
+    model  = xmu_safe_run_summary(model, autoRun = autoRun,  summary = summary, tryHard =  tryHard)
+}
+
+return(model)
+}
+#+end_src
+
+
+** mxPrintFit
+
+#+begin_src R :session R-ea-server :exports both :results output none
+mxPrintFit <- function(model, digits = 3){
+  summary <- summary(model)
+  caption =   paste(
+    "Model fit: ",
+    "Observations: ", summary$numObs,
+    "Chi^2: ", round(summary$fit, digits = digits ),
+    "p: ", round(summary$p, digits = digits ),
+    "df: ", summary$degreesOfFreedom,
+    "RMSEA: ", round(summary$RMSEA, digits = digits),
+    "RMSEA CI: ",summary$RMSEA_CI,
+    "CFI: ",round(summary$CFI, digits = digits ),
+    "TLI: ",round(summary$TLI, digits = digits ),
+    "AIC: ",round(summary$AIC, digits = digits ),
+    "BIC: ",round(summary$BIC, digits = digits ))
+
+if (dim(summary$CI)[1] == 0){
+summary$parameters |>
+  select("name", "Estimate", "Std.Error") |>
+  knitr::kable(caption = caption) |>
+  print()
+
+} else {
+  summary$parameters |>
+  select("name", "Estimate", "Std.Error") |>
+  left_join(rownames_to_column(summary$CI), by =  c("name"="rowname", "Estimate"="estimate")) |>
+  knitr::kable(caption = paste0(caption, ". Note: 95%CI lower and upper bounds")) |>
+  print()
+
+}
+
+}
+#+end_src
+
+** umxRefModels
+
+#+begin_src R :session R-ea-server :exports both :results output none
+umxRefModels <- function(model, vnames, sep = sep, mode = ""){
+  grpnames <- unlist(model$fitfunction$groups)
+  grpmodel <- list()
+  for (i in 1:length(grpnames)) {
+    grpmodel[[i]] <- xmuReferenceMoldelHelper(model[[grpnames[i]]],
+      modelName = grpnames[i],
+      vnames = vnames,  sep = sep, mode = mode)
+  }
+  sgrpmodels <- sapply(grpmodel, "[[", 1)
+  saturatedModel <- aggregateSubrefmodels(paste("Saturated", model@name), sgrpmodels)
+  igrpmodels <- sapply(grpmodel, "[[", 2)
+  independenceModel <- aggregateSubrefmodels(paste("Independence", model@name), igrpmodels)
+
+  saturatedModel <- omxAssignFirstParameters(saturatedModel)
+  saturatedModel <- mxRun(saturatedModel)
+
+  independenceModel <- omxAssignFirstParameters(independenceModel)
+  independenceModel <- mxRun(independenceModel)
+  ref <- list(Saturated=saturatedModel, Independence=independenceModel)
+}
+
+xmuReferenceMoldelHelper <- function( model,modelName, datatype = "raw",vnames, sep = sep, mode = "") {
+  vnames = tvars(vnames, sep = sep)
+  # obsdata <- mzData %>%
+  #   dplyr::select(all_of(vnames), all_of(defvar))
+  defvar =  getDefVars(model)
+  covar = defvar
+  nCov = length(covar)
+  # modelName <- "MZ"
+  ## message(c(vnames, defvar))
+  ## message(colnames(model$data$observed))
+  obsdata = model$data$observed[,c(vnames, defvar)]
+
+  # colTypes = umx_is_ordered(xmu_extract_column(doc$MZ$data$observed, vnames),
+   # summaryObject= TRUE)
+
+  numVar <- ncol(obsdata) - nCov
+  varnam <- colnames(obsdata[1:numVar])
+  # datatype = "raw"
+
+  ordinalCols <- sapply(obsdata[1:numVar], is.ordered)
+  ordnam <- names(obsdata[, ordinalCols])[!(names(obsdata[, ordinalCols]) %in% defvar)]
+
+  # obsdata <- umx_factor()
+  ordinalLevels <- lapply(obsdata[, ordinalCols & !(colnames(obsdata) %in% defvar)], levels)
+  # ordinalLevels <- lapply(obsdata[,ordinalCols], levels)
+
+      sampcov <- cov(obsdata[1:numVar] %>%
+   mutate_all(as.numeric), use="pairwise.complete.obs")
+      startcov <- try(t(chol(sampcov)))
+      # if the cholesky fails, just use the diagonal elements
+      if("try-error" %in% class(startcov)){
+        startcov <- t(chol(diag(diag(sampcov), nrow=nrow(sampcov))))
+      }
+      ## startcov <- startcov[lower.tri(startcov, TRUE)]
+      indepcov <- diag(sampcov)
+      startmea <- colMeans(obsdata[1:numVar] %>%
+   mutate_all(as.numeric), na.rm=TRUE)
+
+  numOrdinal <- sum(ordinalCols)
+  numOrdinalLevels <- sapply(ordinalLevels, length)
+  maxLevels <- max(numOrdinalLevels)
+  numThresholds <- maxLevels-1
+
+  ## startcov <- t(chol(diag(1, numVar)))
+  # startcov <- startcov[lower.tri(startcov, TRUE)]
+  # indepcov <- diag(1, numVar)
+  # startmea <- rep(0, numVar)
+
+  datasource <- mxData(observed=obsdata, type=datatype, numObs=nrow(obsdata), means=NA)
+
+message(startcov)
+
+  ltCov <- mxMatrix(type="Lower", nrow=numVar, ncol=numVar,
+    values=startcov, free=TRUE, name="ltCov")
+
+  diag(ltCov$lbound) <- 0
+
+  ## ltCov <- NULL
+  ## satFre <- matrix(as.logical(diag(!ordinalCols, numVar)), numVar, numVar)
+  ## satFre[lower.tri(satFre, diag=FALSE)] <- TRUE
+
+  ## satCov <- mxMatrix(type="Symm", nrow=numVar, ncol=numVar,
+  ##   values=startcov, free=satFre[lower.tri(satFre, diag=TRUE)], name="satCov",
+  ##   dimnames=list(varnam, varnam))
+
+    satCov <- mxAlgebra(name="satCov", expression= ltCov %*% t(ltCov), dimnames=list(varnam, varnam))
+
+  saturatedModel <- mxModel(name=paste("Saturated", modelName),
+    datasource,
+    ltCov,
+    satCov,
+    mxExpectationNormal("satCov"),
+    mxFitFunctionML())
+
+  indCov <- mxMatrix(type="Diag", nrow=numVar, ncol=numVar, values=indepcov, free=!ordinalCols,
+    lbound=0, name="indCov", dimnames=list(varnam, varnam))
+
+  independenceModel <- mxModel(name=paste("Independence", modelName),
+   datasource, indCov,
+   mxExpectationNormal("indCov"), mxFitFunctionML())
+
+  saturatedModel <- mxModel(saturatedModel,
+    mxMatrix(nrow=1, ncol=numVar, values=startmea, free=TRUE, name="satMea", dimnames=list(NA, varnam)),
+    mxExpectationNormal("satCov", "satMea")
+  )
+
+  independenceModel <- mxModel(independenceModel,
+    mxMatrix(nrow=1, ncol=numVar, values=startmea, free=TRUE, name="satMea", dimnames=list(NA, varnam)),
+    mxExpectationNormal("indCov", "satMea")
+  )
+
+  thrdnam <- paste(rep(ordnam, each=numThresholds), 'ThrDev', 1:numThresholds, sep='')
+  unitLower <- mxMatrix("Lower", numThresholds, numThresholds, values=1, free=FALSE, name="unitLower")
+  thrdM <- rbind(numOrdinalLevels-1, numThresholds - numOrdinalLevels+1)
+
+  thrdfre <- apply(thrdM, 2, rep, x=c(TRUE, FALSE))
+  thrdfre[1:2, ] <- FALSE
+
+  thresholdDeviations <- mxMatrix("Full",
+    name="thresholdDeviations", nrow=numThresholds, ncol=numOrdinal,
+    values=.2,
+    free = thrdfre,
+    lbound = rep( c(-Inf,rep(.01, (numThresholds-1))) , numOrdinal), # TODO adjust increment value
+    dimnames = list(c(), varnam[ordinalCols]),
+  )
+      # saturatedMeans <- mxMatrix(nrow=1, ncol=numVar,
+        # values=startmea, free=c(!ordinalCols), name="satMea", dimnames=list(NA, varnam))
+
+      # ty <- umxThresholdMatrix(obsdata,
+      #   fullVarNames = varnam[ordinalCols],
+      #   sep = sep, method="allFree")
+
+      # equate thresholds
+  ## thresholdDeviations$labels <- thrdnam
+      # ty[[2]]$labels <- NA
+
+  saturatedThresholds <- mxAlgebra(unitLower %*% thresholdDeviations, name="threshMat")
+
+  expMean <- mxAlgebra(expression = satMea +cbind(  t(bCov%*%dCov1),  t(bCov%*%dCov1))  ,
+   name="satMean" )
+
+  # expMean <- mxAlgebra( expression=cbind(
+  #                                   (satMea + cbind(bCov%*%dCov1,bCov%*%dCov2 )),
+  #                                   (satMea + cbind(bCov%*%dCov1,bCov%*%dCov2 )) ),
+  # name="satMean" )
+
+  # saturatedModel <- mxModel(saturatedModel,  #saturatedMeans,
+  #   thresholdDeviations, unitLower,  saturatedThresholds, #expMean,
+  #   mxExpectationNormal("satCov", "satMea", thresholds="threshMat")
+  # )
+
+  # independenceModel <- mxModel(independenceModel, #saturatedMeans,
+  #   thresholdDeviations, unitLower,saturatedThresholds,# expMean, #saturatedMeans,
+  #   mxExpectationNormal("indCov", "satMea", thresholds="threshMat")
+  # )
+
+      # independenceModel <- mxAutoStart(independenceModel)
+      # saturatedModel <- mxAutoStart(saturatedModel)
+
+if (!is.null(defvar)) {
+
+ dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+   labels = paste("data.",paste0(covar),sep=""),
+   values = 0.1,
+   name = "dCov1" )
+
+  dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+   labels = paste("data.",paste(covar),sep=""),
+   values = 0.1,
+   name = "dCov2" )
+
+      # Matrix to hold betas for the covariates
+      # row 1 = pheno 1 (smk)
+      # row 2 = pheno 2 (cpg)
+      # row 3 = prs (betas fixed at zero)
+  if (mode=="mrdoc") {
+
+  bCov <- mxMatrix( type = "Full", nrow = 3, ncol = nCov,
+    free = c(rep(T,nCov),              # X  - regressed on covariates
+     rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+    values = c(rep(0,nCov*3)), byrow = T,
+    labels = c(paste("bX",covar,sep="_"),
+     paste("bY",covar,sep="_"),
+         rep(NA,nCov)),
+    name = "bCov" )
+
+  } else if (mode == "mrdoc2") {
+
+  bCov <- mxMatrix( type = "Full", nrow = 4, ncol = nCov,
+    free = c(rep(T,nCov),              # X  - regressed on covariates
+     rep(T,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+    values = c(rep(0,nCov*4)), byrow = T,
+    labels = c(paste("bX",covar,sep="_"),
+     paste("bY",covar,sep="_"),
+         rep(NA,nCov),
+         rep(NA,nCov)),
+    name = "bCov" )
+
+  } else {
+
+   bCov <- mxMatrix( type = "Full", nrow = 2, ncol = nCov,
+    free = T,                     # PRS  - not regressed on any covariate (exogenous IV)
+    values = c(rep(0.1,nCov*2)), byrow = T,
+    labels = c(paste("bX",covar,sep="_"),
+     paste("bY",covar,sep="_")),
+    name = "bCov" )
+
+  }
+
+
+  saturatedModel = mxModel(saturatedModel, dCov1, dCov2, bCov, expMean,
+                           thresholdDeviations, unitLower, saturatedThresholds, # expMean, #saturatedMeans,
+  mxExpectationNormal("satCov", "satMean", thresholds="threshMat",
+    dimnames = varnam, threshnames = ordnam))
+
+  independenceModel = mxModel(independenceModel, dCov1, dCov2, bCov, expMean,
+    thresholdDeviations, unitLower, saturatedThresholds, # expMean, ,
+  mxExpectationNormal("indCov", "satMean", thresholds="threshMat",
+    dimnames = varnam, threshnames = ordnam))
+
+
+}
+
+  return(list(Saturated=saturatedModel, Independence=independenceModel))
+}
+
+aggregateSubrefmodels <- function(modelName, submodels) {
+  if (is(submodels[[1]], "MxModel")) {
+    fit <- mxFitFunctionMultigroup(paste(sapply(submodels, slot, name="name"), ".fitfunction", sep=""))
+    mxModel(name=modelName, submodels, fit)
+  } else if (is.numeric(submodels[[1]])) {
+    list(sum(unlist(submodels[1,])),
+         sum(unlist(submodels[2,]))) #|> omxAssignFirstParameters()
+  } else {
+    stop(paste("Not sure how to aggregate:\n", paste(deparse(submodels), collapse="\n")))
+  }
+}
+
+getDefVars <- function(model) {
+  warn <- err <- NULL
+  value <- withCallingHandlers(
+    tryCatch(umxModify(model, regex = "^data", verbose = T, autoRun = F), error = function(e) {
+      err <<- e
+      NA
+    }), message = function(w) {
+      warn <<- w
+      invokeRestart("muffleMessage")
+    })
+
+  matched_labels <- gsub(".*?'data\\.(.*?)'.*?(?:, | and |$)", "\\1,", warn)
+  if (length(matched_labels) != 0) {
+    matched_labels <- strsplit(matched_labels, ",")[[1]]
+  } else {
+    matched_labels = NULL
+  }
+
+  return(matched_labels)
+}
+
+#+end_src
+
+* Descriptive
+
+** Tables
+
+*** Means and correlations
+
+#+begin_src R :session R-ea-server :results output :exports both
+dt  |>
+  mutate(cbcl_adhd_T1 = as.numeric(cbcl_adhd_T1),
+         cbcl_adhd_T2 = as.numeric(cbcl_adhd_T2),
+         sag_grade_type_T1 = as.numeric(sag_grade_type_T1),
+         sag_grade_type_T2 = as.numeric(sag_grade_type_T2)) |>
+  as.data.frame() %>%
+  umxSummarizeTwinData(data = .,
+                     zyg = "zyg",
+                     MZ = "MZ",
+                     DZ = "DZ",
+                     selVars = c( "sag_grade_type",  "cbcl_adhd", "meds_lifetime",
+                                   "C1", "C2", "C3",
+                                 "ea_prs", "adhd_prs"))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+mean age 9.9 (SD= 0.62)
+
+|Var            |Mean |   SD|rMZ (284)   |rDZ (394)   |
+|:--------------|:----|----:|:-----------|:-----------|
+|sag_grade_type |6.51 | 1.94|0.79 (0.02) |0.48 (0.04) |
+|cbcl_adhd      |2.98 | 2.17|0.55 (0.05) |0.25 (0.05) |
+|meds_lifetime  |0.07 | 0.26|0.68 (0.03) |0.22 (0.05) |
+|C1             |0    | 0.03|0.92 (0.01) |0.95 (0.01) |
+|C2             |0    | 0.02|0.94 (0.01) |0.71 (0.03) |
+|C3             |0    | 0.02|0.54 (0.05) |0.55 (0.04) |
+|ea_prs         |0    | 1.00|1 (0)       |0.5 (0.05)  |
+|adhd_prs       |0    | 1.00|0.99 (0)    |0.48 (0.05) |
+#+end_example
+
+
+*** Table one (Male x Female)
+
+#+begin_src R :session R-ea-server :results output  :exports both
+options(digits = 3)
+inter %>%
+  as.data.frame() %>%
+  select(zyg, sex,  age, ancs, sag_grade_type, ea_prs,cbcl_adhd ,adhd_prs, meds_lifetime , C1, C2, C3) %>%
+  mutate(zyg = case_when(zyg == 1 ~ "MZ", zyg == 2 ~ "DZ", zyg == 3 ~ "sib", TRUE ~ NA_character_)) %>%
+  drop_na(zyg) %>%
+  CreateTableOne(
+    data = .,
+    includeNA = T,
+    strata = c("sex"),
+    addOverall = T
+  ) %>%
+  kableone()
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+|                          |Overall      |F           |M            |p      |test |
+|:-------------------------|:------------|:-----------|:------------|:------|:----|
+|n                         |2642         |1305        |1337         |       |     |
+|zyg (%)                   |             |            |             |0.674  |     |
+|DZ                        |764 (28.9)   |387 (29.7)  |377 ( 28.2)  |       |     |
+|MZ                        |558 (21.1)   |276 (21.1)  |282 ( 21.1)  |       |     |
+|sib                       |1320 (50.0)  |642 (49.2)  |678 ( 50.7)  |       |     |
+|sex = M (%)               |1337 (50.6)  |0 ( 0.0)    |1337 (100.0) |<0.001 |     |
+|age (mean (SD))           |10.01 (0.66) |9.98 (0.66) |10.04 (0.65) |0.014  |     |
+|ancs (%)                  |             |            |             |0.084  |     |
+|AFR                       |431 (16.3)   |231 (17.7)  |200 ( 15.0)  |       |     |
+|AMR                       |551 (20.9)   |256 (19.6)  |295 ( 22.1)  |       |     |
+|EUR                       |1660 (62.8)  |818 (62.7)  |842 ( 63.0)  |       |     |
+|sag_grade_type (%)        |             |            |             |<0.001 |     |
+|1                         |62 ( 2.3)    |20 ( 1.5)   |42 (  3.1)   |       |     |
+|4                         |63 ( 2.4)    |17 ( 1.3)   |46 (  3.4)   |       |     |
+|5                         |84 ( 3.2)    |27 ( 2.1)   |57 (  4.3)   |       |     |
+|6                         |160 ( 6.1)   |56 ( 4.3)   |104 (  7.8)  |       |     |
+|7                         |146 ( 5.5)   |70 ( 5.4)   |76 (  5.7)   |       |     |
+|8                         |652 (24.7)   |294 (22.5)  |358 ( 26.8)  |       |     |
+|10                        |367 (13.9)   |187 (14.3)  |180 ( 13.5)  |       |     |
+|11                        |705 (26.7)   |399 (30.6)  |306 ( 22.9)  |       |     |
+|12                        |340 (12.9)   |207 (15.9)  |133 (  9.9)  |       |     |
+|NA                        |63 ( 2.4)    |28 ( 2.1)   |35 (  2.6)   |       |     |
+|ea_prs (mean (SD))        |0.00 (0.00)  |0.00 (0.00) |0.00 (0.00)  |0.147  |     |
+|cbcl_adhd (%)             |             |            |             |<0.001 |     |
+|0                         |894 (33.8)   |516 (39.5)  |378 ( 28.3)  |       |     |
+|1                         |344 (13.0)   |185 (14.2)  |159 ( 11.9)  |       |     |
+|2                         |233 ( 8.8)   |107 ( 8.2)  |126 (  9.4)  |       |     |
+|3                         |296 (11.2)   |126 ( 9.7)  |170 ( 12.7)  |       |     |
+|5                         |91 ( 3.4)    |41 ( 3.1)   |50 (  3.7)   |       |     |
+|6                         |78 ( 3.0)    |26 ( 2.0)   |52 (  3.9)   |       |     |
+|7                         |61 ( 2.3)    |24 ( 1.8)   |37 (  2.8)   |       |     |
+|8                         |55 ( 2.1)    |13 ( 1.0)   |42 (  3.1)   |       |     |
+|11                        |37 ( 1.4)    |9 ( 0.7)    |28 (  2.1)   |       |     |
+|NA                        |553 (20.9)   |258 (19.8)  |295 ( 22.1)  |       |     |
+|adhd_prs (mean (SD))      |0.00 (0.00)  |0.00 (0.00) |0.00 (0.00)  |0.091  |     |
+|meds_lifetime (mean (SD)) |0.11 (0.31)  |0.07 (0.25) |0.15 (0.36)  |<0.001 |     |
+|C1 (mean (SD))            |0.00 (0.02)  |0.00 (0.02) |0.00 (0.02)  |0.251  |     |
+|C2 (mean (SD))            |0.00 (0.01)  |0.00 (0.01) |0.00 (0.01)  |0.765  |     |
+|C3 (mean (SD))            |0.00 (0.01)  |0.00 (0.01) |0.00 (0.01)  |0.994  |     |
+#+end_example
+
+** Plots
+
+*** Missingness
+
+#+header: :width 1500 :height 1000 :res 150 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server    :results output graphics file :file graphs/missing.png
+# deselect all genetic PCs from 4 to 10 for both twins
+dt_EUR %>%
+  ## drop_na(zyg) %>%
+  filter(zyg == "DZ") %>%
+  filter(sex_T1 == 2, sex_T2 ==2) %>%
+  ## select(-c(4:5), -c(12:13), -c(16:34)) %>%
+  vis_miss(.)
+#+end_src
+
+#+RESULTS:
+[[file:graphs/missing.png]]
+
+
+*** Phenotypic distribution
+
+#+header: :width 1500 :height 1000 :res 100 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server :results output graphics file :file graphs/phenotypic_distrib.png
+a <- inter %>%
+  drop_na(zyg)%>%
+  ggplot(aes(x = cbcl_adhd,  fill = as.factor(zyg))) +
+    geom_density() +
+    theme_luis() +
+    facet_grid(~zyg) +
+    scale_fill_manual(values = cb_palette, labels = c("MZ", "DZ", "sibs")) +
+    theme(legend.position = c(0.93, 0.85),
+        panel.border = element_rect(colour = "black"),
+        legend.background = element_rect(linetype = 1, size = 0.2, colour = 1)) +
+    labs(x = "CBCL ADHD", y = "Density")
+
+b <- inter %>%
+  drop_na(zyg)%>%
+  ggplot(aes(x = sag_grade_type, fill = as.factor(zyg))) +
+    geom_density() +
+    theme_luis() +
+    facet_grid(~zyg) +
+    theme(legend.position = c(0.93, 0.85),
+        panel.border = element_rect(colour = "black"),
+        legend.background = element_rect(linetype = 1, size = 0.2, colour = 1)) +
+    scale_fill_manual(values = cb_palette, labels = c("MZ", "DZ", "sibs")) +
+    labs(x = "SAG grades", y = "Density")
+
+
+a / b
+
+
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/phenotypic_distrib.png]]
+
+
+*** Continuous vars
+
+#+header: :width 1000 :height 500 :res 100 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server :results output graphics file  :file graphs/boxplots.png
+inter  %>%
+  as.data.frame() %>%
+  select(where(is.numeric), zyg, sex, meds_lifetime) %>%
+  drop_na(zyg) %>%
+  gather(key = "ind", value = "values", -sex, -zyg) %>%
+  ggplot(aes(x = ind, y = values, fill = sex)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_luis() +
+  facet_grid(zyg ~ ., scales = "free_y") +
+  stat_compare_means(comparisons = list(c("F", "M")), label = "p.format",
+                     method.args = list(na.rm = TRUE))
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/boxplots.png]]
+
+
+#+header: :width 1000 :height 500 :res 100 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server :results output graphics file  :file graphs/corr.png
+inter %>%
+  select(where(is.numeric), -zyg, sex,meds_lifetime) %>%
+  ## select(zyg,  age, race,  sag_grade_type, ea_prs,cbcl_adhd ,adhd_prs ) %>%
+  psych::pairs.panels(.,
+    method = "pearson", # correlation method
+    hist.col = "#00AFBB",
+    density = TRUE, # show density plots
+    ellipses = FALSE # show correlation ellipses
+  )
+#+end_src
+
+
+*** Age distribution by sex
+
+#+header: :width 1000 :height 500 :res 100 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server :results output graphics file  :file graphs/age_sex.png
+inter %>%
+  drop_na(zyg) %>%
+  ggplot(aes(age, fill = sex)) +
+  geom_density(alpha = .3) +
+  labs(
+    title = "Age Male x Female", x = "Age",
+    y = "Density"
+  ) +
+  theme_luis()
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/age_sex.png]]
+
+
+*** PRS effect size
+
+#+header: :width 1000 :height 500 :res 100 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server :results output graphics file  :file graphs/prs_r2.png
+p1<- inter %>%
+  filter(zyg %in% c("1", "2", "3")) %>%
+ggplot(aes(x = adhd_prs, y = as.numeric(cbcl_adhd))) +
+  geom_point(aes(x = adhd_prs)) +
+  stat_poly_line(se = FALSE) +
+  stat_poly_eq(use_label(c("eq", "adj.R2", "f"))) +
+  # remove the legend
+  scale_color_manual(values = cb_palette) +
+  theme_luis() +
+  theme(legend.position = "none")
+
+p2 <- inter %>%
+  filter(zyg %in% c("1", "2", "3")) %>%
+ggplot(aes(x = ea_prs, y = as.numeric(sag_grade_type) )) +
+  geom_point(aes(x = ea_prs)) +
+  stat_poly_line(se = FALSE) +
+  stat_poly_eq(use_label(c("eq", "adj.R2", "f"))) +
+  # use the cb_palette
+  scale_color_manual(values = cb_palette) +
+  theme_luis()
+
+p1+p2
+
+## ggsave("prs_r2_300dpi.png", dpi = 300)
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/prs_r2.png]]
+
+
+* ACE reduction
+
+#+begin_src R :session R-ea-server :exports both :results output
+
+umx_set_auto_run(autoRun = T)
+m1 = umxACE(selDVs = "cbcl_adhd",
+            mzData = dt |> filter(zyg == "MZ"),
+            dzData = dt|> filter(zyg == "DZ"),
+            zyg = "zyg",
+            sep = "_T",
+            autoRun = T)
+
+umxReduceACE(m1)
+
+m2 = umxACE(selDVs = "sag_grade_type",
+            mzData = dt |> filter(zyg == "MZ"),
+            dzData = dt|> filter(zyg == "DZ"),
+            zyg = "zyg",
+            sep = "_T",
+            autoRun = T)
+
+umxReduceACE(m2)
+
+
+umx_set_auto_run(autoRun = F)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Found 1 pair(s) of ordinal variables:'cbcl_adhd_T1' and 'cbcl_adhd_T2' (No binary)
+Running ACE with 9 parameters
+MxComputeGradientDescent(SLSQP) evaluations 163 fit 2490.91 change -1.064                                                                         ACE -2 × log(Likelihood) = 2485.029
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; C: common environment; E: unique environment.
+
+|          |    a1|c1 |    e1|
+|:---------|-----:|:--|-----:|
+|cbcl_adhd | 0.767|.  | 0.642|
+
+
+Table: Means (from model$top$expMean)
+
+|          |cbcl_adhd_T1 |cbcl_adhd_T2 |
+|:---------|:------------|:------------|
+|intercept |0            |0            |
+
+?umxPlotACE options: std=T/F, means=T/F, digits=n, strip_zero=T/F, file=, min=, max =
+You gave me an ACE model
+Beginning initial fit attemptFit attempt 0, fit=2485.0287312298, new current best! (was 2485.02873124136)Beginning fit attempt 1 of at maximum 10 extra tries                        Fit attempt 1, fit=2485.02873122916, new current best! (was 2485.0287312298)Beginning fit attempt 2 of at maximum 10 extra tries                        Fit attempt 2, fit=2485.02873122916, new current best! (was 2485.02873122916)Beginning fit attempt 3 of at maximum 10 extra tries                         Fit attempt 3, fit=2485.02835752317, new current best! (was 2485.02873122916)                                                                             
+ Solution found!  Final fit=2485.0284 (started at 2485.0287)  (4 attempt(s): 4 valid, 0 errors)
+
+ADE -2 × log(Likelihood) = 2485.028
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|          |    a1|    d1|    e1|
+|:---------|-----:|-----:|-----:|
+|cbcl_adhd | 0.763| 0.079| 0.641|
+
+
+Table: Means (from model$top$expMean)
+
+|          |cbcl_adhd_T1 |cbcl_adhd_T2 |
+|:---------|:------------|:------------|
+|intercept |0            |0            |
+Beginning initial fit attemptFit attempt 0, fit=2488.30871160965, new current best! (was 2717.021789912)                                                                           
+ Solution found!  Final fit=2488.3087 (started at 2717.0218)  (1 attempt(s): 1 valid, 0 errors)
+
+DE -2 × log(Likelihood) = 2488.309
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|          |a1 |    d1|    e1|
+|:---------|:--|-----:|-----:|
+|cbcl_adhd |.  | 0.778| 0.628|
+
+
+Table: Means (from model$top$expMean)
+
+|          | cbcl_adhd_T1| cbcl_adhd_T2|
+|:---------|------------:|------------:|
+|intercept |       -0.002|       -0.002|
+Beginning initial fit attemptFit attempt 0, fit=2485.02873122916, new current best! (was 2485.03503630165)                                                                             
+ Solution found!  Final fit=2485.0287 (started at 2485.035)  (1 attempt(s): 1 valid, 0 errors)
+
+AE -2 × log(Likelihood) = 2485.029
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|          |    a1|d1 |    e1|
+|:---------|-----:|:--|-----:|
+|cbcl_adhd | 0.767|.  | 0.642|
+
+
+Table: Means (from model$top$expMean)
+
+|          |cbcl_adhd_T1 |cbcl_adhd_T2 |
+|:---------|:------------|:------------|
+|intercept |0            |0            |
+Beginning initial fit attemptFit attempt 0, fit=2547.54324187912, new current best! (was 2727.96986148964)                                                                             
+ Solution found!  Final fit=2547.5432 (started at 2727.9699)  (1 attempt(s): 1 valid, 0 errors)
+
+E -2 × log(Likelihood) = 2547.543
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|          |a1 |d1 | e1|
+|:---------|:--|:--|--:|
+|cbcl_adhd |.  |.  |  1|
+
+
+Table: Means (from model$top$expMean)
+
+|          |cbcl_adhd_T1 |cbcl_adhd_T2 |
+|:---------|:------------|:------------|
+|intercept |0            |0            |
+A dominance model is preferred, set dzCr = 0.25
+
+
+|Model |a    |c    |    e|d    | EP|Δ Fit |Δ df |p       |  AIC|Δ AIC |Compare with Model |Fit units |
+|:-----|:----|:----|----:|:----|--:|:-----|:----|:-------|----:|:-----|:------------------|:---------|
+|ACE   |0.77 |0    | 0.64|     |  9|      |     |        | 2503|0     |                   |-2lnL     |
+|ADE   |0.76 |     | 0.64|0.08 |  9|0     |0    |        | 2503|0     |ACE                |-2lnL     |
+|DE    |     |0.78 | 0.63|     |  8|3.28  |1    |0.070   | 2504|1.28  |ACE                |-2lnL     |
+|AE    |0.77 |     | 0.64|     |  8|0     |1    |1.000   | 2501|-2    |ACE                |-2lnL     |
+|E     |     |     | 1.00|     |  7|62.51 |2    |< 0.001 | 2562|58.51 |ACE                |-2lnL     |
+Among ACE, ADE, CE, and AE models 'AE' fit best according to AIC.
+Conditional AIC probability {Wagenmakers, 2004, 192-196}  indicates relative model support as'ACE', 'ADE', 'DE', and 'AE' respectively are: '0.19', '0.19', '0.1', and '0.52' Using MuMIn::Weights(AIC()).
+ACE (0.19%)ADE (0.19%)DE (0.1%)AE (0.52%)
+Running AE with 8 parameters
+Found 1 pair(s) of ordinal variables:'sag_grade_type_T1' and 'sag_grade_type_T2' (No binary)
+Running ACE with 9 parameters
+ACE -2 × log(Likelihood) = 3125.4
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; C: common environment; E: unique environment.
+
+|               |    a1|c1 |    e1|
+|:--------------|-----:|:--|-----:|
+|sag_grade_type | 0.736|.  | 0.677|
+
+
+Table: Means (from model$top$expMean)
+
+|          | sag_grade_type_T1| sag_grade_type_T2|
+|:---------|-----------------:|-----------------:|
+|intercept |             0.087|             0.087|
+
+?umxPlotACE options: std=T/F, means=T/F, digits=n, strip_zero=T/F, file=, min=, max =
+You gave me an ACE model
+Beginning initial fit attemptFit attempt 0, fit=3125.40042433417, new current best! (was 3125.40042433418)Beginning fit attempt 1 of at maximum 10 extra tries                         MxComputeGradientDescent(SLSQP) evaluations 22 fit 3125.4                                                         Fit attempt 1, fit=3125.40042433416, new current best! (was 3125.40042433417)Beginning fit attempt 2 of at maximum 10 extra tries                         Fit attempt 2, fit=3125.40042433416, new current best! (was 3125.40042433416)Beginning fit attempt 3 of at maximum 10 extra tries                         Fit attempt 3, fit=3125.40042433416, new current best! (was 3125.40042433416)Beginning fit attempt 4 of at maximum 10 extra tries                         Fit attempt 4, fit=3124.23337591341, new current best! (was 3125.40042433416)                                                                             
+ Solution found!  Final fit=3124.2334 (started at 3125.4004)  (5 attempt(s): 5 valid, 0 errors)
+
+ADE -2 × log(Likelihood) = 3124.233
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|               |   a1|    d1|    e1|
+|:--------------|----:|-----:|-----:|
+|sag_grade_type | 0.51| 0.548| 0.663|
+
+
+Table: Means (from model$top$expMean)
+
+|          | sag_grade_type_T1| sag_grade_type_T2|
+|:---------|-----------------:|-----------------:|
+|intercept |             0.095|             0.095|
+Beginning initial fit attemptFit attempt 0, fit=3125.11201925949, new current best! (was 3161.47860932263)                                                                             
+ Solution found!  Final fit=3125.112 (started at 3161.4786)  (1 attempt(s): 1 valid, 0 errors)
+
+DE -2 × log(Likelihood) = 3125.112
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|               |a1 |    d1|    e1|
+|:--------------|:--|-----:|-----:|
+|sag_grade_type |.  | 0.753| 0.658|
+
+
+Table: Means (from model$top$expMean)
+
+|          | sag_grade_type_T1| sag_grade_type_T2|
+|:---------|-----------------:|-----------------:|
+|intercept |             0.098|             0.098|
+Beginning initial fit attemptFit attempt 0, fit=3125.40042433566, new current best! (was 3176.4815184586)                                                                            
+ Solution found!  Final fit=3125.4004 (started at 3176.4815)  (1 attempt(s): 1 valid, 0 errors)
+
+AE -2 × log(Likelihood) = 3125.4
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|               |    a1|d1 |    e1|
+|:--------------|-----:|:--|-----:|
+|sag_grade_type | 0.736|.  | 0.677|
+
+
+Table: Means (from model$top$expMean)
+
+|          | sag_grade_type_T1| sag_grade_type_T2|
+|:---------|-----------------:|-----------------:|
+|intercept |             0.087|             0.087|
+Beginning initial fit attemptFit attempt 0, fit=3196.53205759658, new current best! (was 3479.71311620938)                                                                             
+ Solution found!  Final fit=3196.5321 (started at 3479.7131)  (1 attempt(s): 1 valid, 0 errors)
+
+E -2 × log(Likelihood) = 3196.532
+
+
+Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; D: dominance effects; E: unique environment.
+
+|               |a1 |d1 | e1|
+|:--------------|:--|:--|--:|
+|sag_grade_type |.  |.  |  1|
+
+
+Table: Means (from model$top$expMean)
+
+|          |sag_grade_type_T1 |sag_grade_type_T2 |
+|:---------|:-----------------|:-----------------|
+|intercept |0                 |0                 |
+A dominance model is preferred, set dzCr = 0.25
+
+
+|Model |a    |c    |    e|d    | EP|Δ Fit |Δ df |p       |  AIC|Δ AIC |Compare with Model |Fit units |
+|:-----|:----|:----|----:|:----|--:|:-----|:----|:-------|----:|:-----|:------------------|:---------|
+|ACE   |0.74 |0    | 0.68|     |  9|      |     |        | 3143|0     |                   |-2lnL     |
+|ADE   |0.51 |     | 0.66|0.55 |  9|-1.17 |0    |        | 3142|-1.17 |ACE                |-2lnL     |
+|DE    |     |0.75 | 0.66|     |  8|-0.29 |1    |1.000   | 3141|-2.29 |ACE                |-2lnL     |
+|AE    |0.74 |     | 0.68|     |  8|0     |1    |1.000   | 3141|-2    |ACE                |-2lnL     |
+|E     |     |     | 1.00|     |  7|71.13 |2    |< 0.001 | 3211|67.13 |ACE                |-2lnL     |
+Among ACE, ADE, CE, and AE models 'DE' fit best according to AIC.
+Conditional AIC probability {Wagenmakers, 2004, 192-196}  indicates relative model support as'ACE', 'ADE', 'DE', and 'AE' respectively are: '0.12', '0.21', '0.36', and '0.31' Using MuMIn::Weights(AIC()).
+ACE (0.12%)ADE (0.21%)DE (0.36%)AE (0.31%)
+Running DE with 8 parameters
+#+end_example
+
+
+* Estimation
+** European ancestry models
+
+#+begin_src R :session R-ea-server :exports both :results output none
+dt_EUR <- dt %>% filter(ancs == "EUR") # %>%
+#+end_src
+
+
+*** Running DoC
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+doc_EUR <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_EUR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## doc_EUR <- umxModify(doc_EUR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(doc_EUR)
+
+## doc_EUR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+doc_EUR <- mxOption(doc_EUR, 'mvnRelEps', mxOption(doc_EUR, 'mvnRelEps')/5)
+doc_EUR <- mxTryHardOrdinal(doc_EUR,intervals = TRUE)
+doc_EURs <- summary(doc_EUR, refModels = umxRefModels(doc_EUR, vnames = c("cbcl_adhd","sag_grade_type"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(doc_EURs)
+confint(doc_EUR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  782 Chi^2:  9031.141 p:  0.001 df:  2868 RMSEA:  0.025 RMSEA CI:   CFI:  0.943 TLI:  0.981 AIC:  3295.141 BIC:  -10075.058. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.268|     0.073| -0.473| -0.136|     |
+|ax2                 |    0.568|     0.209|     NA|     NA|NA   |
+|covA                |   -0.149|     0.120|     NA|     NA|NA   |
+|ay2                 |    0.568|     0.212|     NA|     NA|NA   |
+|cx2                 |   -0.078|     0.116|     NA|     NA|NA   |
+|covC                |    0.034|     0.062|     NA|     NA|NA   |
+|cy2                 |   -0.018|     0.067|     NA|     NA|NA   |
+|ex2                 |    0.397|     0.070|     NA|     NA|NA   |
+|ey2                 |    0.117|     0.043|     NA|     NA|NA   |
+|mean_Ph1            |    0.108|     0.047|     NA|     NA|NA   |
+|mean_Ph2            |    0.016|     0.332|     NA|     NA|NA   |
+|tx2                 |    0.005|     0.102|     NA|     NA|NA   |
+|covT                |   -0.023|     0.056|     NA|     NA|NA   |
+|ty2                 |    0.206|     0.093|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.326|     0.034|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.480|     0.047|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.248|     0.034|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.254|     0.039|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.290|     0.049|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.416|     0.079|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.289|     0.068|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.290|     0.062|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.259|     0.053|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.823|     0.143|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.394|     0.070|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.952|     0.163|     NA|     NA|NA   |
+|bX_sex              |   -0.178|     0.040|     NA|     NA|NA   |
+|bY_sex              |    0.104|     0.043|     NA|     NA|NA   |
+|bX_meds_lifetime    |    1.171|     0.132|     NA|     NA|NA   |
+|bY_meds_lifetime    |   -0.574|     0.137|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+     2.5%  97.5%
+g1 -0.412 -0.124
+#+end_example
+
+*** Running DoC reverse
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+docr_EUR <- umxMRDoC2(pheno = c("sag_grade_type","cbcl_adhd"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_EUR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## doc_EUR <- umxModify(doc_EUR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(doc_EUR)
+
+## doc_EUR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+## docr_EUR <- mxOption(docr_EUR, 'mvnRelEps', mxOption(docr_EUR, 'mvnRelEps')/10)
+docr_EUR <- mxTryHardOrdinal(docr_EUR,60, intervals = TRUE)
+docr_EURs <- summary(docr_EUR, refModels = umxRefModels(docr_EUR, vnames = c("sag_grade_type","cbcl_adhd"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(docr_EURs)
+confint(docr_EUR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  782 Chi^2:  9031.141 p:  0.001 df:  2868 RMSEA:  0.026 RMSEA CI:   CFI:  0.939 TLI:  0.98 AIC:  3295.141 BIC:  -10075.058. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.731|     0.194|  -1.24| -0.372|     |
+|ax2                 |    0.689|     0.253|     NA|     NA|NA   |
+|covA                |    0.202|     0.186|     NA|     NA|NA   |
+|ay2                 |    0.496|     0.193|     NA|     NA|NA   |
+|cx2                 |   -0.041|     0.077|     NA|     NA|NA   |
+|covC                |    0.024|     0.069|     NA|     NA|NA   |
+|cy2                 |   -0.021|     0.104|     NA|     NA|NA   |
+|ex2                 |    0.146|     0.051|     NA|     NA|NA   |
+|ey2                 |    0.319|     0.061|     NA|     NA|NA   |
+|mean_Ph1            |    0.016|     0.325|     NA|     NA|NA   |
+|mean_Ph2            |    0.108|     0.047|     NA|     NA|NA   |
+|tx2                 |    0.219|     0.101|     NA|     NA|NA   |
+|covT                |    0.136|     0.076|     NA|     NA|NA   |
+|ty2                 |    0.086|     0.104|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.289|     0.067|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.290|     0.061|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.259|     0.052|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.823|     0.140|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.394|     0.068|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.952|     0.159|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.326|     0.034|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.480|     0.047|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.248|     0.034|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.254|     0.039|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.290|     0.049|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.416|     0.079|     NA|     NA|NA   |
+|bX_sex              |    0.104|     0.043|     NA|     NA|NA   |
+|bY_sex              |   -0.178|     0.040|     NA|     NA|NA   |
+|bX_meds_lifetime    |   -0.574|     0.135|     NA|     NA|NA   |
+|bY_meds_lifetime    |    1.171|     0.132|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+    2.5% 97.5%
+g1 -1.11 -0.35
+#+end_example
+
+
+*** Running mrdoc
+
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+mrdoc_EUR <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), prss = c("adhd_prs"), sibs = T,
+                 covar = c("sex" , "meds_lifetime","C1",
+                           "C2", "C3" , "C4","C5", "C6"),# "C7" , "C8","C9", "C10"),
+                 data = dt_EUR  )|>
+  ## umxModify(update = c( "cx2"), autoRun = F) |>
+  ## umxModify(update = "covE", free = TRUE,value = 0.1, autoRun = F) |>
+  mxModel( mxCI(c("g1","b1", "b2")))
+
+## mxCheckIdentification(mrdoc_EUR |> mxAutoStart())
+
+## mrdoc_EUR <- mxModel(mrdoc_EUR, mxCI(c("g1","b1", "b2")))
+
+## mrdoc <- umxModify(mrdoc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## mrdoc <- umxModify(mrdoc, update = c("re"), free  = TRUE, value = 0.1, autoRun = F)
+
+mrdoc_EUR <- mxOption(mrdoc_EUR, 'mvnRelEps', mxOption(mrdoc_EUR, 'mvnRelEps')/5)
+mrdoc_EUR <- mxTryHardOrdinal(mrdoc_EUR, intervals = T)
+mrdoc_EURs <- summary(mrdoc_EUR, refModels = umxRefModels(mrdoc_EUR, vnames = c("cbcl_adhd","sag_grade_type", "adhd_prs"), sep = "_T", mode = "mrdoc"))
+#+end_src
+
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(mrdoc_EURs)
+confint(mrdoc_EUR, c("g1", "b1", "b2"))
+# umxCI(mrdoc_EUR, c("g1", "b1","b2"))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  782 Chi^2:  12541.883 p:  NaN df:  4219 RMSEA:  0 RMSEA CI:   CFI:  0.825 TLI:  1 AIC:  4103.883 BIC:  -15564.482. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error|  lbound|  ubound|note |
+|:-------------------|--------:|---------:|-------:|-------:|:----|
+|g1                  |  -0.2523|    0.0474| -0.4382| -0.1253|     |
+|b1                  |   0.0758|    0.0277|  0.0178|  0.1362|     |
+|b2                  |  -0.0591|    0.0259| -0.1264| -0.0050|     |
+|ax2                 |   0.5545|    0.0611|      NA|      NA|NA   |
+|covA                |  -0.1480|    0.0734|      NA|      NA|NA   |
+|ay2                 |   0.5582|    0.0793|      NA|      NA|NA   |
+|cx2                 |  -0.0525|    0.0494|      NA|      NA|NA   |
+|covC                |   0.0245|    0.0415|      NA|      NA|NA   |
+|cy2                 |  -0.0203|    0.0571|      NA|      NA|NA   |
+|ex2                 |   0.3716|    0.0571|      NA|      NA|NA   |
+|ey2                 |   0.1128|    0.0199|      NA|      NA|NA   |
+|σ3                  |   0.9929|    0.0094|      NA|      NA|NA   |
+|mean_Ph1            |   0.2470|    0.0522|      NA|      NA|NA   |
+|mean_Ph2            |  -0.2497|    0.0787|      NA|      NA|NA   |
+|mean_prs            |   0.0158|    0.0295|      NA|      NA|NA   |
+|tx2                 |  -0.0671|    0.0511|      NA|      NA|NA   |
+|covT                |   0.0079|    0.0411|      NA|      NA|NA   |
+|ty2                 |   0.1923|    0.0584|      NA|      NA|NA   |
+|cbcl_adhd_dev3      |   0.3315|    0.0338|      NA|      NA|NA   |
+|cbcl_adhd_dev4      |   0.4954|    0.0451|      NA|      NA|NA   |
+|cbcl_adhd_dev5      |   0.2580|    0.0343|      NA|      NA|NA   |
+|cbcl_adhd_dev6      |   0.2648|    0.0394|      NA|      NA|NA   |
+|cbcl_adhd_dev7      |   0.3035|    0.0506|      NA|      NA|NA   |
+|cbcl_adhd_dev8      |   0.4385|    0.0814|      NA|      NA|NA   |
+|sag_grade_type_dev3 |   0.2894|    0.0412|      NA|      NA|NA   |
+|sag_grade_type_dev4 |   0.2901|    0.0357|      NA|      NA|NA   |
+|sag_grade_type_dev5 |   0.2583|    0.0298|      NA|      NA|NA   |
+|sag_grade_type_dev6 |   0.8159|    0.0458|      NA|      NA|NA   |
+|sag_grade_type_dev7 |   0.3908|    0.0286|      NA|      NA|NA   |
+|sag_grade_type_dev8 |   0.9428|    0.0462|      NA|      NA|NA   |
+|bX_sex              |  -0.2268|    0.0343|      NA|      NA|NA   |
+|bY_sex              |   0.2441|    0.0412|      NA|      NA|NA   |
+|bX_meds_lifetime    |   1.2662|    0.1105|      NA|      NA|NA   |
+|bY_meds_lifetime    |  -0.5735|    0.0788|      NA|      NA|NA   |
+|bX_C1               |  -8.5758|    0.7813|      NA|      NA|NA   |
+|bY_C1               |  29.0003|    2.2222|      NA|      NA|NA   |
+|bX_C2               | -30.9594|    2.8709|      NA|      NA|NA   |
+|bY_C2               |  22.1307|    1.8950|      NA|      NA|NA   |
+|bX_C3               | -13.1370|    1.0402|      NA|      NA|NA   |
+|bY_C3               |  -8.2140|    0.7270|      NA|      NA|NA   |
+|bX_C4               | -12.8177|    1.0802|      NA|      NA|NA   |
+|bY_C4               |  -4.7812|    3.0595|      NA|      NA|NA   |
+|bX_C5               |  -2.9239|    1.7155|      NA|      NA|NA   |
+|bY_C5               |   3.9727|    0.3439|      NA|      NA|NA   |
+|bX_C6               |   4.6022|    0.4339|      NA|      NA|NA   |
+|bY_C6               |  -0.6390|    0.0866|      NA|      NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+      2.5%     97.5%
+g1 -0.3451 -0.159421
+b1  0.0216  0.130082
+b2 -0.1099 -0.008303
+#+end_example
+
+*** Running mrdoc reverse
+
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+mrdocr_EUR <- umxMRDoC2(pheno = c("sag_grade_type","cbcl_adhd"), prss = c("ea_prs"), sibs = T,
+                 covar = c("sex","meds_lifetime" ,"C1",
+                           "C2", "C3" , "C4","C5", "C6"),# "C7" , "C8","C9", "C10"),
+                data = dt_EUR) |>
+  ## umxModify(update = c( "b2"), free = FALSE, value = -0.05, autoRun = F) |>
+  ## umxModify(update = c("covE"), free = TRUE,value = 0.1, autoRun = F) |>
+  mxModel(mxCI(c("g1","b1", "b2")))
+
+## mxCheckIdentification(mrdocr_EUR)
+## mrdoc <- umxModify(mrdoc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## mrdoc <- umxModify(mrdoc, update = c("re"), free  = TRUE, value = 0.1, autoRun = F)
+
+mrdocr_EUR <- mxOption(mrdocr_EUR, 'mvnRelEps', mxOption(mrdocr_EUR, 'mvnRelEps')/10)
+mrdocr_EUR <- mxTryHardOrdinal(mrdocr_EUR, 60,intervals = T)
+mrdocr_EURs <- summary(mrdocr_EUR, refModels = umxRefModels(mrdocr_EUR, vnames = c("sag_grade_type","cbcl_adhd", "ea_prs"), sep = "_T", mode = "mrdoc"))
+#+end_src
+
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(mrdocr_EURs)
+confint(mrdocr_EUR, c("g1", "b1", "b2"))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  782 Chi^2:  12475.913 p:  NaN df:  4219 RMSEA:  0 RMSEA CI:   CFI:  0.764 TLI:  1 AIC:  4037.913 BIC:  -15630.452. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.693|     0.132| -1.184| -0.357|     |
+|b1                  |    0.106|     0.026|  0.048|  0.187|     |
+|b2                  |    0.027|     0.032| -0.038|  0.098|     |
+|ax2                 |    0.654|     0.075|     NA|     NA|NA   |
+|covA                |    0.169|     0.103|     NA|     NA|NA   |
+|ay2                 |    0.462|     0.203|     NA|     NA|NA   |
+|cx2                 |   -0.030|     0.063|     NA|     NA|NA   |
+|covC                |    0.010|     0.051|     NA|     NA|NA   |
+|cy2                 |   -0.002|     0.095|     NA|     NA|NA   |
+|ex2                 |    0.138|     0.016|     NA|     NA|NA   |
+|ey2                 |    0.309|     0.057|     NA|     NA|NA   |
+|σ3                  |    0.982|     0.009|     NA|     NA|NA   |
+|mean_Ph1            |   -0.239|     0.054|     NA|     NA|NA   |
+|mean_Ph2            |    0.246|     0.086|     NA|     NA|NA   |
+|mean_prs            |   -0.035|     0.031|     NA|     NA|NA   |
+|tx2                 |    0.199|     0.059|     NA|     NA|NA   |
+|covT                |    0.164|     0.060|     NA|     NA|NA   |
+|ty2                 |    0.056|     0.084|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.290|     0.040|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.291|     0.034|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.259|     0.028|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.820|     0.028|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.393|     0.021|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.950|     0.030|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.331|     0.033|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.494|     0.046|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.257|     0.034|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.265|     0.039|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.304|     0.051|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.441|     0.082|     NA|     NA|NA   |
+|bX_sex              |    0.242|     0.053|     NA|     NA|NA   |
+|bY_sex              |   -0.227|     0.054|     NA|     NA|NA   |
+|bX_meds_lifetime    |   -0.588|     0.082|     NA|     NA|NA   |
+|bY_meds_lifetime    |    1.293|     0.112|     NA|     NA|NA   |
+|bX_C1               |   28.530|        NA|     NA|     NA|NA   |
+|bY_C1               |   -7.936|     3.157|     NA|     NA|NA   |
+|bX_C2               |   25.059|     6.641|     NA|     NA|NA   |
+|bY_C2               |  -33.313|     1.891|     NA|     NA|NA   |
+|bX_C3               |   -7.435|     4.851|     NA|     NA|NA   |
+|bY_C3               |  -14.045|     1.334|     NA|     NA|NA   |
+|bX_C4               |   -4.504|     5.584|     NA|     NA|NA   |
+|bY_C4               |  -13.206|        NA|     NA|     NA|NA   |
+|bX_C5               |    6.576|    13.681|     NA|     NA|NA   |
+|bY_C5               |   -3.165|        NA|     NA|     NA|NA   |
+|bX_C6               |    1.732|     4.675|     NA|     NA|NA   |
+|bY_C6               |    3.239|     2.033|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+      2.5%   97.5%
+g1 -0.9512 -0.4351
+b1  0.0540  0.1576
+b2 -0.0354  0.0892
+#+end_example
+
+
+*** Running MR-DoC2
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+mrdoc2_EUR <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), sibs =T,
+                    prss = c("adhd_prs","ea_prs" ) ,
+                 covar = c("sex","meds_lifetime","C1",
+                           "C2", "C3" , "C4","C5", "C6"), #, "C7" , "C8","C9", "C10"),
+                  data=dt_EUR) |>
+  ## umxModify(update= c( "covC", "cx2"), autoRun = F) |>"
+  mxModel( mxCI(c("g1", "g2", "b1", "b3"))) #|>
+  ## umxRun(tryHard = "ordinal")
+
+
+## mxCheckIdentification(mrdoc2_EUR)
+## mrdoc2_EUR <- umxModify(mrdoc2_EUR, update = c( "covC", "cx2"), autoRun = F)
+
+mrdoc2_EUR <- mxOption(mrdoc2_EUR, 'mvnRelEps', mxOption(mrdoc2_EUR, 'mvnRelEps')/5)
+mrdoc2_EUR <- mxTryHardOrdinal(mrdoc2_EUR,60,  intervals = T)
+## mrdoc2 <- umxRun(mrdoc2, optimizer = "CSOLNP", intervals = T)
+mrdoc2_EURs <- summary(mrdoc2_EUR,
+                       refModels = umxRefModels(mrdoc2_EUR,
+                                                vnames = c("cbcl_adhd","sag_grade_type","adhd_prs", "ea_prs"), sep = "_T", mode="mrdoc2"))
+#+end_src
+
+#+begin_src R :results output :exports both :session R-ea-server
+mxPrintFit(mrdoc2_EURs)
+
+confint(mrdoc2_EUR, c("g1", "g2", "b1", "b3"))
+
+mrdoc2_EURs
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  782 Chi^2:  16256.539 p:  NaN df:  5581 RMSEA:  0 RMSEA CI:   CFI:  0.896 TLI:  1 AIC:  5094.539 BIC:  -20923.273. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.856|     0.060| -1.872|     NA|!!!  |
+|g2                  |   -0.500|     0.043|     NA|  0.028|!!!  |
+|b1                  |    0.059|     0.016|     NA|  0.139|!!!  |
+|b3                  |    0.065|     0.017|  0.011|  0.146|     |
+|ax2                 |    0.463|     0.041|     NA|     NA|NA   |
+|covA                |    0.419|     0.048|     NA|     NA|NA   |
+|ay2                 |    0.610|     0.046|     NA|     NA|NA   |
+|rf                  |   -0.077|     0.027|     NA|     NA|NA   |
+|cx2                 |   -0.059|     0.034|     NA|     NA|NA   |
+|covC                |   -0.020|     0.029|     NA|     NA|NA   |
+|cy2                 |    0.001|     0.034|     NA|     NA|NA   |
+|ex2                 |    0.319|     0.034|     NA|     NA|NA   |
+|covE                |    0.257|     0.025|     NA|     NA|NA   |
+|ey2                 |    0.255|     0.029|     NA|     NA|NA   |
+|σ3                  |    0.993|     0.009|     NA|     NA|NA   |
+|σ4                  |    0.982|     0.009|     NA|     NA|NA   |
+|mean_Ph1            |    0.111|     0.036|     NA|     NA|NA   |
+|mean_Ph2            |    0.090|     0.068|     NA|     NA|NA   |
+|mean_prs1           |    0.016|     0.031|     NA|     NA|NA   |
+|mean_prs2           |   -0.035|     0.030|     NA|     NA|NA   |
+|tx2                 |    0.045|     0.031|     NA|     NA|NA   |
+|covT                |    0.096|     0.024|     NA|     NA|NA   |
+|ty2                 |    0.211|     0.030|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.326|     0.026|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.481|     0.036|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.248|     0.031|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.253|     0.036|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.289|     0.046|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.413|     0.075|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.299|     0.045|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.302|     0.038|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.271|     0.032|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.858|     0.040|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.411|     0.026|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.990|     0.043|     NA|     NA|NA   |
+|bX_sex              |   -0.185|     0.031|     NA|     NA|NA   |
+|bY_sex              |    0.112|     0.037|     NA|     NA|NA   |
+|bX_meds_lifetime    |    1.135|     0.102|     NA|     NA|NA   |
+|bY_meds_lifetime    |   -0.574|     0.084|     NA|     NA|NA   |
+|bX_C1               |  -19.331|     2.669|     NA|     NA|NA   |
+|bY_C1               |   47.305|     5.584|     NA|     NA|NA   |
+|bX_C2               |  -33.602|     4.741|     NA|     NA|NA   |
+|bY_C2               |   38.569|     5.371|     NA|     NA|NA   |
+|bX_C3               |   -0.173|     0.150|     NA|     NA|NA   |
+|bY_C3               |  -23.780|     2.670|     NA|     NA|NA   |
+|bX_C4               |   -0.055|     0.149|     NA|     NA|NA   |
+|bY_C4               |  -19.392|     2.461|     NA|     NA|NA   |
+|bX_C5               |    8.371|     1.243|     NA|     NA|NA   |
+|bY_C5               |    1.246|     0.186|     NA|     NA|NA   |
+|bX_C6               |    6.727|     0.988|     NA|     NA|NA   |
+|bY_C6               |   -0.531|     5.112|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+      2.5%   97.5%
+g1 -0.9742 -0.7370
+g2 -0.5835 -0.4158
+b1  0.0282  0.0901
+b3  0.0312  0.0982
+Summary of MRDoC2
+
+free parameters:
+                  name                    matrix   row               col
+1                   g1                     top.B     2                 1
+2                   g2                     top.B     1                 2
+3                   b1                     top.B     1                 3
+4                   b3                     top.B     2                 4
+5                  ax2                 top.psi_a     1                 1
+6                 covA                 top.psi_a     1                 2
+7                  ay2                 top.psi_a     2                 2
+8                   rf                 top.psi_a     3                 4
+9                  cx2                 top.psi_c     1                 1
+10                covC                 top.psi_c     1                 2
+11                 cy2                 top.psi_c     2                 2
+12                 ex2                 top.psi_e     1                 1
+13                covE                 top.psi_e     1                 2
+14                 ey2                 top.psi_e     2                 2
+15                  σ3                 top.lamba     3                 3
+16                  σ4                 top.lamba     4                 4
+17            mean_Ph1                top.meanT1     1                 1
+18            mean_Ph2                top.meanT1     1                 2
+19           mean_prs1                top.meanT1     1                 3
+20           mean_prs2                top.meanT1     1                 4
+21                 tx2                    top.Ts     X                 X
+22                covT                    top.Ts     X                 Y
+23                 ty2                    top.Ts     Y                 Y
+24      cbcl_adhd_dev3 top.deviations_for_thresh dev_3      cbcl_adhd_T1
+25      cbcl_adhd_dev4 top.deviations_for_thresh dev_4      cbcl_adhd_T1
+26      cbcl_adhd_dev5 top.deviations_for_thresh dev_5      cbcl_adhd_T1
+27      cbcl_adhd_dev6 top.deviations_for_thresh dev_6      cbcl_adhd_T1
+28      cbcl_adhd_dev7 top.deviations_for_thresh dev_7      cbcl_adhd_T1
+29      cbcl_adhd_dev8 top.deviations_for_thresh dev_8      cbcl_adhd_T1
+30 sag_grade_type_dev3 top.deviations_for_thresh dev_3 sag_grade_type_T1
+31 sag_grade_type_dev4 top.deviations_for_thresh dev_4 sag_grade_type_T1
+32 sag_grade_type_dev5 top.deviations_for_thresh dev_5 sag_grade_type_T1
+33 sag_grade_type_dev6 top.deviations_for_thresh dev_6 sag_grade_type_T1
+34 sag_grade_type_dev7 top.deviations_for_thresh dev_7 sag_grade_type_T1
+35 sag_grade_type_dev8 top.deviations_for_thresh dev_8 sag_grade_type_T1
+36              bX_sex                   MZ.bCov     1                 1
+37              bY_sex                   MZ.bCov     2                 1
+38    bX_meds_lifetime                   MZ.bCov     1                 2
+39    bY_meds_lifetime                   MZ.bCov     2                 2
+40               bX_C1                   MZ.bCov     1                 3
+41               bY_C1                   MZ.bCov     2                 3
+42               bX_C2                   MZ.bCov     1                 4
+43               bY_C2                   MZ.bCov     2                 4
+44               bX_C3                   MZ.bCov     1                 5
+45               bY_C3                   MZ.bCov     2                 5
+46               bX_C4                   MZ.bCov     1                 6
+47               bY_C4                   MZ.bCov     2                 6
+48               bX_C5                   MZ.bCov     1                 7
+49               bY_C5                   MZ.bCov     2                 7
+50               bX_C6                   MZ.bCov     1                 8
+51               bY_C6                   MZ.bCov     2                 8
+     Estimate Std.Error A lbound ubound
+1   -0.855584   0.06050
+2   -0.499662   0.04276
+3    0.059137   0.01580
+4    0.064715   0.01710
+5    0.462873   0.04093
+6    0.419280   0.04811
+7    0.609915   0.04586
+8   -0.077476   0.02689
+9   -0.058634   0.03445
+10  -0.020008   0.02885
+11   0.000884   0.03384
+12   0.319241   0.03366
+13   0.256686   0.02541
+14   0.254833   0.02868
+15   0.992933   0.00947
+16   0.981560   0.00937
+17   0.110702   0.03608
+18   0.090050   0.06771
+19   0.015907   0.03057
+20  -0.034691   0.02987
+21   0.044698   0.03097
+22   0.095995   0.02400
+23   0.210971   0.02981
+24   0.326344   0.02618    0.001
+25   0.481290   0.03599    0.001
+26   0.248078   0.03099    0.001
+27   0.253318   0.03593    0.001
+28   0.288814   0.04641    0.001
+29   0.412646   0.07496    0.001
+30   0.298938   0.04479    0.001
+31   0.302222   0.03824    0.001
+32   0.270518   0.03158    0.001
+33   0.857618   0.04047    0.001
+34   0.410787   0.02578    0.001
+35   0.990169   0.04345    0.001
+36  -0.185429   0.03149
+37   0.112187   0.03722
+38   1.134635   0.10155
+39  -0.574107   0.08436
+40 -19.330900   2.66877 !
+41  47.304610   5.58411
+42 -33.602229   4.74053 !
+43  38.569171   5.37104
+44  -0.172648   0.14968 !
+45 -23.779704   2.67025
+46  -0.055328   0.14942 !
+47 -19.391745   2.46114
+48   8.370881   1.24252 !
+49   1.245908   0.18638 !
+50   6.726936   0.98781
+51  -0.530833   5.11187 !
+
+confidence intervals:
+    lbound estimate ubound note
+g1 -1.8721  -0.8556     NA  !!!
+g2      NA  -0.4997 0.0283  !!!
+b1      NA   0.0591 0.1391  !!!
+b3  0.0115   0.0647 0.1465
+  To investigate missing CIs, run summary() again, with verbose=T, to see CI details.
+
+Model Statistics:
+               |  Parameters  |  Degrees of Freedom  |  Fit (-2lnL units)
+       Model:             51                   5581                 16257
+   Saturated:           -146                   5778                 15474
+Independence:           -242                   5874                 24992
+Number of observations/statistics: 782/5632
+
+
+,** Information matrix is not positive definite (not at a candidate optimum).
+  Be suspicious of these results. At minimum, do not trust the standard errors.
+
+chi-square:  χ² ( df=-197 ) = 783,  p = NaN
+Information Criteria:
+      |  df Penalty  |  Parameters Penalty  |  Sample-Size Adjusted
+AIC:           5095                  16359                    16366
+BIC:         -20923                  16596                    16434
+CFI: 0.896
+TLI: 1   (also known as NNFI)
+RMSEA:  0  [95% CI (NA, NA)]
+Prob(RMSEA <= 0.05): NA
+timestamp: 2024-04-12 19:35:53
+Wall clock time: 1005 secs
+optimizer:  SLSQP
+OpenMx version number: 2.20.7
+Need help?  See help(mxSummary)
+#+end_example
+
+
+
+#+begin_src R :session R-ea-server :exports both :sesults output :eval no
+
+noCx <- umxModify(mrdoc2_EUR, name="Cx",update = c("cx2", "covC"), autoRun = T)
+noCy <- umxModify(mrdoc2_EUR, name="Cy", update = c("cy2", "covC"), autoRun = T)
+noCxy <- umxModify(mrdoc2_EUR, name="Cxy", update = c("cy2", "covC","cx2"), autoRun = T)
+noEx <- umxModify(mrdoc2_EUR, name = "Ex", update = c("ex2", "covE"), autoRun = T)
+noEy <- umxModify(mrdoc2_EUR, name = "Ey", update = c("ey2", "covE"), autoRun = T)
+noECx <- umxModify(mrdoc2_EUR,name = "ECx", update = c("ex2", "covE","cx2", "covC"), autoRun = T)
+noECy <- umxModify(mrdoc2_EUR, name = "ECy",update = c("ey2", "covE","cy2", "covC"), autoRun = T)
+
+umxCompare(mrdoc2_EUR, c(noCx, noCy, noEx, noEy, noECx, noECy),compareWeightedAIC=T )
+
+#+end_src
+
+#+RESULT:
+#+begin_example
+
+Table: Table of Model Comparisons
+
+|Model  | EP|Δ Fit       |Δ df |p       |     AIC|Δ AIC       |Compare with Model |Fit units |
+|:------|--:|:-----------|:----|:-------|-------:|:-----------|:------------------|:---------|
+|MRDoC2 | 54|            |     |        |    9211|0           |                   |-2lnL     |
+|Cx     | 52|2.163       |2    |0.339   |    9210|-1.837      |MRDoC2             |-2lnL     |
+|Cy     | 52|0.91        |2    |0.635   |    9208|-3.09       |MRDoC2             |-2lnL     |
+|Ex     | 52|3916679.304 |2    |< 0.001 | 3925887|3916675.304 |MRDoC2             |-2lnL     |
+|Ey     | 52|566206.611  |2    |< 0.001 |  575414|566202.611  |MRDoC2             |-2lnL     |
+|ECx    | 50|3916498.518 |4    |< 0.001 | 3925702|3916490.518 |MRDoC2             |-2lnL     |
+|ECy    | 50|643081.028  |4    |< 0.001 |  652284|643073.028  |MRDoC2             |-2lnL     |
+The  'Cy'  model is the best fitting model according to AIC.AIC weight-based  {Wagenmakers, 2004, 192-196} conditional probabilities of being the best model for  'MRDoC2', 'Cx', 'Cy', 'Ex', 'Ey', 'ECx', and 'ECy'  respectively are:  '0.12', '0.31', '0.57', '0', '0', '0', and '0'  Using MuMIn::Weights(AIC()).There were 50 or more warnings (use warnings() to see the first 50)
+> . + . + >
+#+end_example
+
+
+*** Evidence of bidirectionality
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+noloop <- umxModify(mrdoc2_EUR, name = "noloop", update  = c("g1", "g2"),  autoRun = T)
+nog1 <- umxModify(mrdoc2_EUR, name = "nog1", update  = c("g1"),  autoRun = T)
+nog2 <- umxModify(mrdoc2_EUR, name = "nog2", update  = c("g2"),  autoRun = T)
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+
+umxCompare(mrdoc2_EUR, c(nog1, nog2, noloop), compareWeightedAIC = T)
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Table: Table of Model Comparisons
+
+|Model  | EP|Δ Fit  |Δ df |p     |   AIC|Δ AIC |Compare with Model |Fit units |
+|:------|--:|:------|:----|:-----|-----:|:-----|:------------------|:---------|
+|MRDoC2 | 51|       |     |      | 16359|0     |                   |-2lnL     |
+|nog1   | 50|8.282  |1    |0.004 | 16365|6.282 |MRDoC2             |-2lnL     |
+|nog2   | 50|3.255  |1    |0.071 | 16360|1.255 |MRDoC2             |-2lnL     |
+|noloop | 49|11.941 |2    |0.003 | 16367|7.941 |MRDoC2             |-2lnL     |
+The  'MRDoC2'  model is the best fitting model according to AIC.AIC weight-based  {Wagenmakers, 2004, 192-196} conditional probabilities of being the best model for  'MRDoC2', 'nog1', 'nog2', and 'noloop'  respectively are:  '0.63', '0.03', '0.33', and '0.01'  Using MuMIn::Weights(AIC()).> [1] "org_babel_R_eoe"
+#+end_example
+
+** Multigroup by sex
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+
+dt3 <- dt_EUR %>%
+  mutate(
+    cbcl_adhd_T1 = fct_lump(cbcl_adhd_T1, 4),
+    cbcl_adhd_T2 = fct_lump(cbcl_adhd_T2, 4),
+    sag_grade_type_T1 = fct_lump(sag_grade_type_T1, 6),
+    sag_grade_type_T2 = fct_lump(sag_grade_type_T2, 6),
+  )
+
+
+mrdoc_m <- umxMRDoC2( pheno = c("cbcl_adhd","sag_grade_type"), sibs  = T,
+  prss = c("adhd_prs", "ea_prs"),
+                 covar = c("meds_lifetime","C1",
+                           "C2", "C3" , "C4","C5", "C6"),# "C7" , "C8","C9", "C10"),
+  data=dt3 %>% filter(sex_T1 == 1, sex_T2 == 1),  autoRun = F) %>%
+  umxModify(update = c("covC", "cx2")) %>%
+    mxRename(oldname = "top", newname = "top_m") %>%
+    mxRename(oldname = "MZ", newname = "MZ_m")%>%
+    mxRename(oldname = "DZ", newname = "DZ_m") %>%
+    mxRename(oldname = "Sibs", newname = "Sibs_m") %>%
+  umxModify( regex="*", newlabels ="m_\\1" , name = "males", autoRun = F)  %>%
+   umxModify(regex="^m_data", newlabels = "data\\1", autoRun = TRUE, tryHard = "ordinal") #%>%
+  ## umxRun(tryHard = "ordinal", calc_sat = FALSE)
+
+
+mrdoc_f <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), sibs=T,
+  prss = c("adhd_prs", "ea_prs"),
+               covar = c("meds_lifetime","C1",
+                           "C2", "C3" , "C4","C5", "C6"),# "C7" , "C8","C9", "C10")
+  data=dt3 %>% filter(sex_T1 == 2, sex_T2 ==2),  autoRun = F) %>%
+  umxModify(update = c("covC", "cx2")) %>%
+       mxRename(oldname = "top", newname = "top_f") %>%
+    mxRename(oldname = "MZ", newname = "MZ_f")%>%
+    mxRename(oldname = "DZ", newname = "DZ_f") %>%
+    mxRename(oldname = "Sibs", newname = "Sibs_f") %>%
+      umxModify(regex="*", newlabels ="f_\\1" , name = "females", autoRun = F)   %>%
+   umxModify(regex="^f_data", newlabels = "data\\1", autoRun = TRUE, tryHard="ordinal")
+
+
+#mrdoc_f$top_f$deviations_for_thresh$values <- mrdoc_m$top_m$deviations_for_thresh$values
+
+mrdoc_f <- mxOption(mrdoc_f, 'mvnRelEps', mxOption(mrdoc_f, 'mvnRelEps')/5)
+mrdoc_f <- mxTryHardOrdinal(mrdoc_f,60, intervals = T)
+
+
+mrdoc_multi <- umxSuperModel("multigroup",
+  mrdoc_m$top_m,
+  mrdoc_m$MZ_m,
+  mrdoc_m$DZ_m,
+  mrdoc_m$Sibs_m,
+  mrdoc_f$top_f,
+  mrdoc_f$MZ_f,
+  mrdoc_f$Sibs_f,
+  mrdoc_f$DZ_f) #%>% #+
+  ## umxRun(tryHard="ordinal")
+  ## mxCI(c("m_g1", "f_g1"))
+
+# mrdoc_multi <- mxAutoStart(mrdoc_multi)
+# mrdoc_multi <- mxTryHard(mrdoc_multi, intervals = T)
+
+mrdoc_multi <- mxOption(mrdoc_multi, 'mvnRelEps', mxOption(mrdoc_multi, 'mvnRelEps')/10)
+mrdoc_multi <- mxTryHardOrdinal(mrdoc_multi,60, intervals = T)
+
+# mrdoc_multi <- umxCI(mrdoc_multi, run = "yes", which=c("m_g1", "f_g1"))
+## mrdoc_summary <-summary(mrdoc_multi, refModels = mxRefModels(mrdoc_multi, run = T))
+
+#+end_src
+
+#+begin_src R :results output :exports both :session R-ea-server
+mxPrintFit(summary(mrdoc_multi))
+confint(mrdoc_multi,c("m_g1", "m_g2", "m_b1", "m_b3", "f_g1", "f_g2", "f_b1", "f_b3"))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Model fit:  Observations:  606 Chi^2:  11861.041 p:  NA df:  4242 RMSEA:  0 RMSEA CI:   CFI:  NA TLI:  1 AIC:  3377.041 BIC:  -15316.944
+
+|name                  | Estimate| Std.Error|
+|:---------------------|--------:|---------:|
+|m_g1                  |  -0.2488|    0.1307|
+|m_g2                  |  -0.3954|    0.0831|
+|m_b1                  |   0.1607|    0.0525|
+|m_b3                  |   0.0574|    0.0436|
+|m_ax2                 |   0.4294|    0.1689|
+|m_covA                |   0.1489|    0.1209|
+|m_ay2                 |   0.3633|    0.2974|
+|m_rf                  |  -0.0931|    0.0439|
+|m_cy2                 |   0.0853|    0.1433|
+|m_ex2                 |   0.3967|    0.0755|
+|m_covE                |   0.2765|    0.0464|
+|m_ey2                 |   0.5990|    0.2051|
+|m_σ3                  |   1.0027|    0.0157|
+|m_σ4                  |   1.0021|    0.0157|
+|m_mean_Ph1            |  -0.0727|    0.0602|
+|m_mean_Ph2            |   0.0382|    0.2619|
+|m_mean_prs1           |   0.0656|    0.0521|
+|m_mean_prs2           |  -0.0961|    0.0520|
+|m_tx2                 |   0.0526|    0.1306|
+|m_covT                |   0.0005|    0.1092|
+|m_ty2                 |  -0.0647|    0.1631|
+|m_cbcl_adhd_dev3      |   0.3249|    0.0524|
+|m_cbcl_adhd_dev4      |   0.4950|    0.0735|
+|m_sag_grade_type_dev3 |   1.1197|    0.2079|
+|m_sag_grade_type_dev4 |   0.4442|    0.0858|
+|m_sag_grade_type_dev5 |   0.8235|    0.1471|
+|m_sag_grade_type_dev6 |   0.5093|    0.1068|
+|m_bX_meds_lifetime    |   1.0232|    0.1898|
+|m_bY_meds_lifetime    |  -0.1415|    0.1450|
+|m_bX_C1               | -65.4148|   29.6836|
+|m_bY_C1               |  25.7258|   30.5317|
+|m_bX_C2               | -52.0029|   41.4067|
+|m_bY_C2               |  51.4097|   38.5169|
+|m_bX_C3               |  32.7975|   26.6686|
+|m_bY_C3               |  12.4696|   24.2879|
+|m_bX_C4               |  12.6294|   36.0627|
+|m_bY_C4               |  28.0886|   32.6534|
+|m_bX_C5               |  78.1978|   38.2994|
+|m_bY_C5               | -31.7747|   35.0923|
+|m_bX_C6               |   1.1158|   15.3587|
+|m_bY_C6               |   3.8894|   14.2884|
+|f_g1                  |  -0.5123|    0.1100|
+|f_g2                  |  -0.5079|    0.1030|
+|f_b1                  |   0.0319|    0.0367|
+|f_b3                  |   0.0286|    0.0323|
+|f_ax2                 |   0.6837|    0.1531|
+|f_covA                |   0.3893|    0.0558|
+|f_ay2                 |   0.6765|    0.1170|
+|f_rf                  |  -0.0659|    0.0444|
+|f_cy2                 |  -0.1788|    0.0712|
+|f_ex2                 |   0.4135|    0.0152|
+|f_covE                |   0.2434|    0.0792|
+|f_ey2                 |   0.3011|    0.0759|
+|f_σ3                  |   0.9667|    0.0152|
+|f_σ4                  |   0.9729|    0.0153|
+|f_mean_Ph1            |  -0.0686|    0.0467|
+|f_mean_Ph2            |   0.0567|    0.1325|
+|f_mean_prs1           |  -0.0540|    0.0488|
+|f_mean_prs2           |  -0.0145|    0.0494|
+|f_tx2                 |  -0.1141|    0.1522|
+|f_covT                |   0.1200|    0.0620|
+|f_ty2                 |   0.2689|    0.0899|
+|f_cbcl_adhd_dev3      |   0.3969|    0.0495|
+|f_cbcl_adhd_dev4      |   0.5044|    0.0662|
+|f_sag_grade_type_dev3 |   0.9019|    0.1047|
+|f_sag_grade_type_dev4 |   0.4099|    0.0501|
+|f_sag_grade_type_dev5 |   1.0735|    0.0961|
+|f_sag_grade_type_dev6 |   1.1106|    0.1259|
+|f_bX_meds_lifetime    |   1.3827|    0.2298|
+|f_bY_meds_lifetime    |  -0.2816|    0.2170|
+|f_bX_C1               |  42.2402|   26.6708|
+|f_bY_C1               |  49.0498|        NA|
+|f_bX_C2               |  25.1302|   46.3159|
+|f_bY_C2               |  45.4283|   40.5627|
+|f_bX_C3               | -14.2490|   19.6703|
+|f_bY_C3               | -31.9927|        NA|
+|f_bX_C4               |  -7.1714|   19.6731|
+|f_bY_C4               | -36.9108|    4.7344|
+|f_bX_C5               | -40.8928|   27.3556|
+|f_bY_C5               | -12.1291|   25.2287|
+|f_bX_C6               |   0.0999|    9.9908|
+|f_bY_C6               |   1.9633|    9.5125|
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+         2.5%     97.5%
+m_g1 -0.50485  0.007328
+m_g2 -0.55838 -0.232480
+m_b1  0.05791  0.263575
+m_b3 -0.02813  0.142945
+f_g1 -0.72800 -0.296623
+f_g2 -0.70970 -0.306039
+f_b1 -0.03999  0.103843
+f_b3 -0.03476  0.091924
+#+end_example
+
+
+** Evidence of sex effect?
+
+#+begin_src R :results output none :exports both :session R-ea-server
+
+mrdoc_multi_equated <- umxModify(mrdoc_multi, name = "equated_causal",
+ update = c("m_g1", "f_g1","m_g2", "f_g2"),
+ newlabels = c("g1", "g1","g2", "g2"), free = T, autoRun = T) # |>
+  ## mxTryHardOrdinal()
+
+#+end_src
+
+#+begin_src R :results output :exports both :session R-ea-server
+
+mrdoc_m$output$fit
+mrdoc_f$output$fit
+mrdoc_multi_equated$output$fit
+mrdoc_multi$output$fit
+
+
+#+end_src
+
+#+RESULTS:
+: [1] 6144
+: [1] 5717
+: [1] 11861
+: [1] 11861
+
+
+#+begin_src R :results output :exports both :session R-ea-server
+
+out <- umxCompare(mrdoc_multi,c(mrdoc_multi_equated),compareWeightedAIC=T)
+out
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+
+Table: Table of Model Comparisons
+
+|Model          | EP|Δ Fit |Δ df |p     |   AIC|Δ AIC  |Compare with Model |Fit units |
+|:--------------|--:|:-----|:----|:-----|-----:|:------|:------------------|:---------|
+|multigroup     | 82|      |     |      | 12025|0      |                   |-2lnL     |
+|equated_causal | 80|0.203 |2    |0.903 | 12021|-3.797 |multigroup         |-2lnL     |
+The  'equated_causal'  model is the best fitting model according to AIC.AIC weight-based  {Wagenmakers, 2004, 192-196} conditional probabilities of being the best model for  'multigroup' and 'equated_causal'  respectively are:  '0.13' and '0.87'  Using MuMIn::Weights(AIC()).>            Model EP  Δ Fit Δ df     p   AIC  Δ AIC Compare with Model Fit units
+1     multigroup 82     NA   NA  <NA> 12025  0.000               <NA>     -2lnL
+2 equated_causal 80 0.2032    2 0.903 12021 -3.797         multigroup     -2lnL
+#+end_example
+
+* AFR ancestry models
+
+#+begin_src R :session R-ea-server :exports both :results output none
+dt_AFR <- dt %>% filter(ancs == "AFR") # %>%
+#+end_src
+
+
+*** Running DoC
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+doc_AFR <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_AFR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## doc_AFR <- umxModify(doc_AFR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(doc_AFR)
+
+## doc_AFR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+doc_AFR <- mxOption(doc_AFR, 'mvnRelEps', mxOption(doc_AFR, 'mvnRelEps')/5)
+doc_AFR <- mxTryHardOrdinal(doc_AFR,20, intervals = TRUE)
+doc_AFRs <- summary(doc_AFR, refModels = umxRefModels(doc_AFR, vnames = c("cbcl_adhd","sag_grade_type"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(doc_AFRs)
+confint(doc_AFR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Table: Model fit:  Observations:  197 Chi^2:  2427.649 p:  0.125 df:  753 RMSEA:  0.03 RMSEA CI:   CFI:  0.915 TLI:  0.972 AIC:  921.649 BIC:  -1550.603. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.070|     0.098| -0.657|  0.483|     |
+|ax2                 |    0.691|     0.394|     NA|     NA|NA   |
+|covA                |   -0.447|        NA|     NA|     NA|NA   |
+|ay2                 |    0.264|     0.164|     NA|     NA|NA   |
+|cx2                 |    0.159|     0.219|     NA|     NA|NA   |
+|covC                |    0.178|     0.092|     NA|     NA|NA   |
+|cy2                 |   -0.097|     0.113|     NA|     NA|NA   |
+|ex2                 |    0.246|     0.083|     NA|     NA|NA   |
+|ey2                 |    0.294|     0.098|     NA|     NA|NA   |
+|mean_Ph1            |    0.103|     0.110|     NA|     NA|NA   |
+|mean_Ph2            |   -0.138|     0.164|     NA|     NA|NA   |
+|tx2                 |   -0.196|        NA|     NA|     NA|NA   |
+|covT                |   -0.013|     0.102|     NA|     NA|NA   |
+|ty2                 |    0.354|     0.146|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.276|     0.076|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.480|     0.096|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.137|     0.050|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.141|     0.054|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.263|     0.088|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.370|     0.135|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.247|     0.062|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.500|     0.080|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.271|     0.051|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.633|     0.086|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.254|     0.047|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.602|     0.087|     NA|     NA|NA   |
+|bX_sex              |   -0.148|     0.084|     NA|     NA|NA   |
+|bY_sex              |    0.101|     0.064|     NA|     NA|NA   |
+|bX_meds_lifetime    |    1.182|     0.293|     NA|     NA|NA   |
+|bY_meds_lifetime    |   -0.660|     0.240|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+     2.5% 97.5%
+g1 -0.261 0.122
+#+end_example
+
+
+*** Running DoCr
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+docr_AFR <- umxMRDoC2(pheno = c("sag_grade_type","cbcl_adhd"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_AFR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## docr_AFR <- umxModify(docr_AFR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(docr_AFR)
+
+## docr_AFR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+docr_AFR <- mxOption(docr_AFR, 'mvnRelEps', mxOption(docr_AFR, 'mvnRelEps')/10)
+docr_AFR <- mxTryHardOrdinal(docr_AFR,60, intervals = TRUE)
+docr_AFRs <- summary(docr_AFR, refModels = umxRefModels(docr_AFR, vnames = c("sag_grade_type","cbcl_adhd"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(docr_AFRs)
+confint(docr_AFR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+Table: Model fit:  Observations:  197 Chi^2:  2427.65 p:  0.125 df:  753 RMSEA:  0.03 RMSEA CI:   CFI:  0.915 TLI:  0.972 AIC:  921.65 BIC:  -1550.602. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.058|     0.200| -0.588|  0.382|     |
+|ax2                 |    0.330|     0.147|     NA|     NA|NA   |
+|covA                |   -0.477|     0.189|     NA|     NA|NA   |
+|ay2                 |    0.636|     0.175|     NA|     NA|NA   |
+|cx2                 |   -0.122|     0.103|     NA|     NA|NA   |
+|covC                |    0.160|     0.109|     NA|     NA|NA   |
+|cy2                 |    0.178|     0.121|     NA|     NA|NA   |
+|ex2                 |    0.295|     0.070|     NA|     NA|NA   |
+|ey2                 |    0.245|     0.082|     NA|     NA|NA   |
+|mean_Ph1            |   -0.138|     0.064|     NA|     NA|NA   |
+|mean_Ph2            |    0.103|     0.094|     NA|     NA|NA   |
+|tx2                 |    0.355|     0.104|     NA|     NA|NA   |
+|covT                |    0.021|     0.142|     NA|     NA|NA   |
+|ty2                 |   -0.196|     0.122|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.247|     0.052|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.500|     0.055|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.271|     0.043|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.633|     0.051|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.254|     0.038|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.602|     0.060|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.276|     0.060|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.480|     0.074|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.137|     0.044|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.141|     0.048|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.263|     0.072|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.370|     0.099|     NA|     NA|NA   |
+|bX_sex              |    0.101|     0.064|     NA|     NA|NA   |
+|bY_sex              |   -0.148|     0.076|     NA|     NA|NA   |
+|bX_meds_lifetime    |   -0.660|     0.231|     NA|     NA|NA   |
+|bY_meds_lifetime    |    1.182|     0.270|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+     2.5% 97.5%
+g1 -0.449 0.334
+#+end_example
+
+
+* AMR ancestry models
+
+#+begin_src R :session R-ea-server :exports both :results output none
+dt_AMR <- dt %>% filter(ancs == "AMR") # %>%
+#+end_src
+
+
+*** Running DoC
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+doc_AMR <- umxMRDoC2(pheno = c("cbcl_adhd","sag_grade_type"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_AMR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## doc_AMR <- umxModify(doc_AMR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(doc_AMR)
+
+## doc_AMR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+doc_AMR <- mxOption(doc_AMR, 'mvnRelEps', mxOption(doc_AMR, 'mvnRelEps')/10)
+doc_AMR <- mxTryHardOrdinal(doc_AMR,60, intervals = TRUE)
+doc_AMRs <- summary(doc_AMR, refModels = umxRefModels(doc_AMR, vnames = c("cbcl_adhd","sag_grade_type"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(doc_AMRs)
+confint(doc_AMR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Table: Model fit:  Observations:  242 Chi^2:  2929.835 p:  0.124 df:  917 RMSEA:  0.027 RMSEA CI:   CFI:  0.915 TLI:  0.972 AIC:  1095.835 BIC:  -2103.521. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.259|     0.038| -0.585| -0.013|     |
+|ax2                 |    0.497|     0.371|     NA|     NA|NA   |
+|covA                |   -0.154|     0.058|     NA|     NA|NA   |
+|ay2                 |    0.684|        NA|     NA|     NA|NA   |
+|cx2                 |   -0.067|     0.197|     NA|     NA|NA   |
+|covC                |    0.058|     0.047|     NA|     NA|NA   |
+|cy2                 |   -0.095|     0.081|     NA|     NA|NA   |
+|ex2                 |    0.385|     0.123|     NA|     NA|NA   |
+|ey2                 |    0.077|     0.026|     NA|     NA|NA   |
+|mean_Ph1            |    0.074|     0.071|     NA|     NA|NA   |
+|mean_Ph2            |   -0.131|        NA|     NA|     NA|NA   |
+|tx2                 |    0.113|     0.178|     NA|     NA|NA   |
+|covT                |    0.008|     0.053|     NA|     NA|NA   |
+|ty2                 |    0.100|     0.043|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.286|     0.046|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.511|     0.071|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.189|     0.048|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.260|     0.069|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.135|     0.055|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.456|     0.127|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.201|     0.038|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.332|     0.036|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.182|     0.030|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.678|     0.028|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.338|     0.033|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.694|     0.053|     NA|     NA|NA   |
+|bX_sex              |   -0.178|     0.077|     NA|     NA|NA   |
+|bY_sex              |    0.120|     0.073|     NA|     NA|NA   |
+|bX_meds_lifetime    |    1.064|     0.273|     NA|     NA|NA   |
+|bY_meds_lifetime    |   -0.231|     0.190|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+     2.5%  97.5%
+g1 -0.333 -0.184
+#+end_example
+
+
+*** Running DoC reverse
+
+#+begin_src R :session R-ea-server :exports both :results output none
+
+docr_AMR <- umxMRDoC2(pheno = c("sag_grade_type","cbcl_adhd"), sibs = T,
+                 covar = c("sex","meds_lifetime" ),
+                 data = dt_AMR)  |>
+  ## umxModify(update = c("covC", "cx2"), autoRun = F) |>
+  mxModel( mxCI(c("g1")))
+## docr_AMR <- umxModify(docr_AMR, update = c("covE"), free = T, autoRun = F)
+
+## mxCheckIdentification(docr_AMR)
+
+## docr_AMR <-
+## doc <- umxModify(doc, update = c("cx2", "rc", "cy2"), autoRun = F)
+## doc <- umxModify(doc, update = c("re"), free = TRUE, value = 0.1, autoRun = F)
+
+docr_AMR <- mxOption(docr_AMR, 'mvnRelEps', mxOption(docr_AMR, 'mvnRelEps')/10)
+docr_AMR <- mxTryHardOrdinal(docr_AMR,60, intervals = TRUE)
+docr_AMRs <- summary(docr_AMR, refModels = umxRefModels(docr_AMR, vnames = c("sag_grade_type","cbcl_adhd"), sep = "_T"))
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output
+mxPrintFit(docr_AMRs)
+confint(docr_AMR, "g1")
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+Table: Model fit:  Observations:  242 Chi^2:  2929.834 p:  0.124 df:  917 RMSEA:  0.027 RMSEA CI:   CFI:  0.915 TLI:  0.972 AIC:  1095.834 BIC:  -2103.521. Note: 95%CI lower and upper bounds
+
+|name                | Estimate| Std.Error| lbound| ubound|note |
+|:-------------------|--------:|---------:|------:|------:|:----|
+|g1                  |   -0.975|     0.070|  -2.14|     NA|!!!  |
+|ax2                 |    0.794|     0.051|     NA|     NA|NA   |
+|covA                |    0.492|     0.060|     NA|     NA|NA   |
+|ay2                 |    0.701|     0.104|     NA|     NA|NA   |
+|cx2                 |   -0.129|     0.043|     NA|     NA|NA   |
+|covC                |   -0.051|     0.046|     NA|     NA|NA   |
+|cy2                 |   -0.043|     0.064|     NA|     NA|NA   |
+|ex2                 |    0.102|     0.024|     NA|     NA|NA   |
+|ey2                 |    0.288|     0.085|     NA|     NA|NA   |
+|mean_Ph1            |   -0.133|     0.062|     NA|     NA|NA   |
+|mean_Ph2            |    0.074|     0.066|     NA|     NA|NA   |
+|tx2                 |    0.104|     0.045|     NA|     NA|NA   |
+|covT                |    0.079|     0.050|     NA|     NA|NA   |
+|ty2                 |    0.169|     0.092|     NA|     NA|NA   |
+|sag_grade_type_dev3 |    0.201|     0.045|     NA|     NA|NA   |
+|sag_grade_type_dev4 |    0.332|     0.048|     NA|     NA|NA   |
+|sag_grade_type_dev5 |    0.182|     0.033|     NA|     NA|NA   |
+|sag_grade_type_dev6 |    0.677|     0.054|     NA|     NA|NA   |
+|sag_grade_type_dev7 |    0.337|     0.039|     NA|     NA|NA   |
+|sag_grade_type_dev8 |    0.693|     0.065|     NA|     NA|NA   |
+|cbcl_adhd_dev3      |    0.286|     0.052|     NA|     NA|NA   |
+|cbcl_adhd_dev4      |    0.511|     0.075|     NA|     NA|NA   |
+|cbcl_adhd_dev5      |    0.189|     0.050|     NA|     NA|NA   |
+|cbcl_adhd_dev6      |    0.260|     0.069|     NA|     NA|NA   |
+|cbcl_adhd_dev7      |    0.135|     0.055|     NA|     NA|NA   |
+|cbcl_adhd_dev8      |    0.456|     0.130|     NA|     NA|NA   |
+|bX_sex              |    0.120|     0.070|     NA|     NA|NA   |
+|bY_sex              |   -0.178|     0.082|     NA|     NA|NA   |
+|bX_meds_lifetime    |   -0.231|     0.189|     NA|     NA|NA   |
+|bY_meds_lifetime    |    1.064|     0.272|     NA|     NA|NA   |
+Wald type confidence intervals (see ?mxCI for likelihood-based CIs)
+    2.5%  97.5%
+g1 -1.11 -0.839
+#+end_example
+
+
+
+* mrdoc2 + twins + sibs
+
+#+begin_src R :session R-ea-server :exports both :results output none :eval no
+covar  <- c("sex","C1", "C2","C3", "C4", "C5",
+            "C6", "C7","C8", "C9", "C10","meds_lifetime") 
+nCov <- length(covar)
+sep <- "_T"
+pheno = c("X","Y")
+indVar <- paste(covar,c(rep(1,nCov),rep(2,nCov)),sep=sep)
+prss = c("iX", "iY")
+vnames = tvars(c(pheno, prss), sep = sep)
+
+# Specifying the mrdoc2 model. This is similar to mrdoc1 except
+# larger matrices (one more instrument)
+  # Matrix for causal paths
+BE <-  mxMatrix(name = "BE", type = "Full",nrow=4,  ncol = 4,byrow = TRUE,
+           labels = c(NA,   "g2", "b1", "b4",
+                      "g1", NA,   "b2", "b3",
+                      NA,   NA,   NA,   NA,
+                      NA,   NA,   NA,   NA),
+                values = c(0, .1, .1,0,
+                    .1, 0, 0,.1,
+                    0,0,0,0,
+                    0,0,0,0),
+           free = c(FALSE, TRUE, TRUE, FALSE,
+                    TRUE, FALSE, FALSE, TRUE,
+                    FALSE, FALSE, FALSE, FALSE,
+                    FALSE, FALSE, FALSE, FALSE),
+           dimnames = list(c("X", "Y", "iX", "iY"),
+                           c("X", "Y", "iX", "iY")))
+
+# A, C and E decomposition
+A <- mxMatrix(name = 'A', type='Symm', nrow=4, ncol = 4,byrow = TRUE,
+           labels=c("ax2","covA",NA,NA,
+                    "covA","ay2",NA,NA,
+                    NA,NA,"x2"  ,"rf",
+                    NA,NA,"rf","y2"),
+               values = c(.6, .1, 0,0,
+                	.1,.6, 0,0,
+                	0,0,1,.1,
+                	0,0,.1,1),
+           free=c(TRUE,TRUE,FALSE,FALSE,
+                  TRUE,TRUE,FALSE,FALSE,
+                  FALSE,FALSE,TRUE,TRUE,
+                  FALSE,FALSE,TRUE,TRUE),
+           dimnames = list(c("X", "Y", "iX", "iY"),
+                           c("X", "Y", "iX", "iY")))
+
+C <-  mxMatrix(name = 'C', type='Symm',nrow=4, ncol = 4,byrow = TRUE,
+           labels =c("cx2", "covC",NA,NA,
+                     "covC","cy2" ,NA,NA,
+                     NA,    NA,    NA,NA,
+                     NA,    NA,    NA,NA),
+               values = c(.6, .1, 0,0,
+                    .1,.6, 0,0,
+                    0,0,1,.1,
+                    0,0,.1,1),
+           free=c(TRUE,TRUE,  FALSE,FALSE,
+                  TRUE,TRUE,  FALSE,FALSE,
+                  FALSE,FALSE,FALSE,FALSE,
+                  FALSE,FALSE,FALSE,FALSE),
+           dimnames = list(c("X", "Y", "iX", "iY"),
+                           c("X", "Y", "iX", "iY")))
+
+E <-  mxMatrix(name = 'E', type='Symm', nrow=4, ncol = 4,byrow = TRUE,
+           labels =c("ex2", "covE",NA,NA,
+                     "covE","ey2" ,NA,NA,
+                     NA,    NA,    NA,NA,
+                     NA,    NA,    NA,NA),
+               values = c(.3, .1, 0,0,
+                    .1,.3, 0,0,
+                    0,0,0,0,
+                    0,0,0,0),
+           free= c(TRUE,TRUE,  FALSE,FALSE,
+                   TRUE,TRUE,  FALSE,FALSE,
+                   FALSE,FALSE,FALSE,FALSE,
+                   FALSE,FALSE,FALSE,FALSE),
+           dimnames = list(c("X", "Y", "iX", "iY"),
+                           c("X", "Y", "iX", "iY")))
+
+Ts <-  mxMatrix(name = 'Ts', type='Symm', nrow=4, ncol = 4,byrow = TRUE,
+               labels =c("tx2", "covT",NA,NA,
+                         "covT","ty2" ,NA,NA,
+                         NA,    NA,    NA,NA,
+                         NA,    NA,    NA,NA),
+               values = c(.4, 0, 0,0,
+                    0,.4, 0,0,
+                    0,0,0,0,
+                    0,0,0,0),
+               free= c(TRUE,TRUE,  FALSE,FALSE,
+                       TRUE, TRUE,  FALSE,FALSE,
+                       FALSE,FALSE,FALSE,FALSE,
+                       FALSE,FALSE,FALSE,FALSE),
+               dimnames = list(c("X", "Y", "iX", "iY"),
+                               c("X", "Y", "iX", "iY")))
+
+  # A filter matrix, as we need to remove the PRSs from twin 2
+filter <-  mxMatrix(name = 'filter', type='Full', nrow=6, ncol=8, free=FALSE,
+           byrow = TRUE,
+           values=c(1,0,0,0,0,0,0,0,
+                    0,1,0,0,0,0,0,0,
+                    0,0,1,0,0,0,0,0,
+                    0,0,0,1,0,0,0,0,
+                    0,0,0,0,1,0,0,0,
+                    0,0,0,0,0,1,0,0),
+           dimnames = list(c("X_T1", "Y_T1", "iX_T1","iY_T1",
+                             "X_T2", "Y_T2"),
+                           c("X_T1", "Y_T1", "iX_T1","iY_T1","X_T2",
+                             "Y_T2", "iX_T2","iY_T2")))
+
+LY <-  mxMatrix(name = 'LY', type='Full',nrow=4, ncol = 4, free = FALSE,
+           values = diag(4), labels = NA,
+           dimnames = list(c("X", "Y", "iX", "iY"),
+                           c("X", "Y", "iX", "iY")))
+
+# The object with the means
+mean_t1 <-    mxMatrix( name = "meanT1", type="Full", nrow=1, ncol=4, free= TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2"))
+
+    # in mz twins, prs_twin1 == prs_twin2
+    # so, twin2 in mz pairs does not have the prs variable
+mean_t2mz <-  mxMatrix(name ="meanT2MZ", type="Full", nrow=1, ncol=2, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2"))
+
+    # in dz twins, prs_twin1 != prs_twin2
+mean_t2dz <-   mxMatrix(name ="meanT2DZ", type="Full", nrow=1, ncol=4, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2"))
+
+## The object with the means
+mean_t2sib <-  mxMatrix(name ="meanT2sib", type="Full", nrow=1, ncol=4, free=TRUE,
+      labels=c("mean_Ph1","mean_Ph2","mean_prs1", "mean_prs2"))
+
+
+# Removing the PRS from the MZ means
+algebras <- list(
+  ## mxAlgebra('mean_mz', expression = mean_dz %*% t(filter)),
+  # Identity matrix to algebra calculations
+  mxMatrix(name = 'I', type='Iden', nrow= 4,ncol= 4 ),
+  # The needed matrices for calculating the variances
+  mxAlgebra('solvBE'  , expression =  solve(I - BE) ),
+  mxAlgebra('A_'  , expression =  LY %&% solvBE %&% A),
+  mxAlgebra('C_'  , expression =  LY %&% solvBE %&% C),
+  mxAlgebra('E_'  , expression =  LY %&% solvBE %&% E),
+  mxAlgebra('Ts_'  , expression = LY %&% solvBE %&% Ts),
+  mxAlgebra('full_variance' , expression= A_ + C_ + E_ + Ts_),
+  ## mxMatrix( name="K", type="Full", nrow=1, ncol=1, free=FALSE, values=0.5, labels="k"), #still locally identified with freely estimated "k"
+  mxAlgebra('variance_mz_', expression=rbind(
+    cbind(full_variance, A_ + C_+ Ts_),
+    cbind(A_ + C_+ Ts_, full_variance))),
+  mxAlgebra('variance_dz', expression=rbind(
+    cbind(full_variance, 0.5%x%A_ + C_ + Ts_),
+    cbind(0.5%x%A_ + C_ + Ts_, full_variance))),
+  mxAlgebra('variance_sibs', expression=rbind(
+    cbind(full_variance, 0.5%x%A_ + C_),
+    cbind(0.5%x%A_ + C_, full_variance))),
+   mxAlgebra('variance_mz', expression= filter%&%variance_mz_))
+
+      dCov1 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(1,nCov)),sep=sep),sep=""),
+       name = "dCov1" )
+      # Twin 2
+      dCov2 <- mxMatrix( type = "Full", nrow = nCov, ncol = 1, free = FALSE,
+       labels = paste("data.",paste(covar,c(rep(2,nCov)),sep=sep),sep=""),
+       name = "dCov2" )
+
+    # Matrix to hold betas for the covariates
+    # row 1 = pheno 1 (smk)
+    # row 2 = pheno 2 (cpg)
+    # row 3 = prs (betas fixed at zero)
+      bCov <- mxMatrix( type = "Full", nrow = 4, ncol = nCov,
+        free = c(rep(F,nCov),                      # X  - regressed on covariates
+         rep(F,nCov),                      # Y  - regressed on covariates
+         rep(F,nCov),                     # PRS  - not regressed on any covariate (exogenous IV)
+         rep(F,nCov)),                     # PRS  - not regressed on any covariate (exogenous IV)
+        values = c(rep(0,nCov*4)), byrow = T,
+        labels = c(paste("bX",covar,sep="_"),
+         paste("bY",covar,sep="_"),
+         rep(NA,nCov),
+         rep(NA,nCov)),
+        name = "bCov" )
+
+    expMeanMZ <- mxAlgebra("expMeanMZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2MZ + t(bCov[1:2,] %*%dCov2)))
+
+    expMeanDZ <- mxAlgebra("expMeanDZ",
+      expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+       top.meanT2DZ + t(bCov%*%dCov2)))
+
+      expMeanSib <- mxAlgebra("expMeanSib",
+        expression = cbind(top.meanT1 + t(bCov%*%dCov1),
+         top.meanT2sib + t(bCov%*%dCov2)))
+
+top_mr2 <- mxModel("top", BE, A, C, E,Ts, filter, LY,  algebras, mean_t1, mean_t2mz, mean_t2dz, mean_t2sib)
+
+      expMZ =  mxExpectationNormal("top.variance_mz",
+          means = "expMeanMZ",
+          dimnames = vnames[1:6],
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+        expDZ =mxExpectationNormal("top.variance_dz",
+          means =  "expMeanDZ",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+expSib = mxExpectationNormal("top.variance_sibs",
+          means = "expMeanSib",
+          dimnames = vnames,
+          thresholds="top.threshMat",
+          threshnames = colTypes$ordVarNames
+        )
+
+# Preparing the objects for the multiple groups (MZ, DZ) analysis
+MZ_mr2 = mxModel("MZ", mxFitFunctionML(), dCov1, dCov2, bCov,expMeanMZ, expMZ) #,
+  ## mxExpectationNormal(covariance = "top.variance_mz",means = "expMeanMZ",
+                      ## dimnames =  c("X_T1", "Y_T1", "iX_T1", "iY_T1",
+                                    ## "X_T2", "Y_T2")))
+
+DZ_mr2 = mxModel("DZ", mxFitFunctionML(), dCov1, dCov2, bCov,expMeanDZ, expDZ) #,
+  ## mxExpectationNormal(covariance = "top.variance_dz", means = "expMeanDZ",
+                      ## dimnames =  c("X_T1", "Y_T1", "iX_T1", "iY_T1",
+                                    ## "X_T2", "Y_T2", "iX_T2", "iY_T2")))
+
+SIBS_mr2 = mxModel("sibs", mxFitFunctionML(), dCov1, dCov2, bCov,expMeanSib, expSib)#,
+  ## mxExpectationNormal(covariance = "top.variance_sibs", means = "expMeanSib",
+                      ## dimnames =  c("X_T1", "Y_T1", "iX_T1", "iY_T1",
+                                    ## "X_T2", "Y_T2", "iX_T2", "iY_T2")))
+
+# Combining objects to generate the final model
+sibs = mxModel("mrdoc2", top_mr2, MZ_mr2, DZ_mr2, SIBS_mr2,
+                 mxFitFunctionMultigroup(c("MZ","DZ","sibs") ) )
+
+#+end_src
+
+#+begin_src R :session R-ea-server :exports both :results output :eval no
+
+dt2 <- dt_EUR %>%
+  transmute("X_T1" = cbcl_adhd_T1,
+         "Y_T1" = sag_grade_type_T1,
+         "iX_T1" = adhd_prs_T1,
+          "iY_T1" = ea_prs_T1,
+          "X_T2" = cbcl_adhd_T2,
+          "Y_T2" = sag_grade_type_T2,
+         "iX_T2" = adhd_prs_T2,
+          "iY_T2" = ea_prs_T2,
+meds_lifetime_T1, meds_lifetime_T2,
+         sex_T1, sex_T2,
+         C1_T1, C2_T1, C3_T1, C4_T1, C5_T1, C6_T1, C7_T1, C8_T1, C9_T1, C10_T1,
+         C1_T2, C2_T2, C3_T2, C4_T2, C5_T2, C6_T2, C7_T2, C8_T2, C9_T2, C10_T2,
+         zyg)
+
+
+
+data <- dt2
+# remove NAs from covariates
+for (ind in indVar) {
+  for (p in pheno) {
+    # Create the phenotype variable name
+    p_var <- paste0(p, "_", substr(ind, nchar(ind)-2+1, nchar(ind)))
+    # Update the indicator variable only if it is NA
+    data[[ind]][is.na(data[[ind]]) & (!is.na(data[[p_var]]))] <- 99999
+    }
+}
+data <- data[complete.cases(data[,c(indVar)]),]
+
+
+dg2mz <- data %>% filter(zyg == "MZ")
+dg2dz <- data %>% filter(zyg == "DZ")
+dg2sibs <- data %>% filter(zyg == "sib")
+
+
+colTypes = umx_is_ordered(xmu_extract_column(dg2dz, vnames),
+   summaryObject= TRUE)
+
+ty = umxThresholdMatrix( rbind(dg2mz, dg2dz, dg2sibs), fullVarNames = colTypes$ordVarNames,
+      sep = sep, method="Mehta")
+
+bidir <-sibs
+bidir$top <- mxModel(bidir$top, ty)
+bidir$MZ <- mxModel(bidir$MZ ,mxData(dg2mz, type = "raw"))
+bidir$DZ <- mxModel(bidir$DZ, mxData(dg2dz, type = "raw"))
+bidir$sibs <- mxModel(bidir$sibs, mxData(dg2sibs, type = "raw"))
+
+## mxGetExpected(bidir, "covariances")
+
+## bidir <- mxAutoStart(bidir)
+
+## bidir <- mxOption(bidir, 'mvnRelEps', mxOption(bidir, 'mvnRelEps')/10)
+bidir <- mxRun(bidir)
+
+summary(bidir)
+#' You can check for local identification: (this is slow, do this at home)
+#' mxCheckIdentification(bidir)$status
+
+
+## umxCI(bidir, c("g1","g2"), run = "yes")
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Running mrdoc2 with 35 parameters
+MxComputeGradientDescent(SLSQP) evaluations 152 fit 17161.4 change -609.2MxComputeGradientDescent(SLSQP) evaluations 459 fit 16894.5 change -25.61MxComputeGradientDescent(SLSQP) evaluations 689 fit 16860.2 change -6.434MxComputeGradientDescent(SLSQP) evaluations 994 fit 16849.2 change -3.88 MxComputeGradientDescent(SLSQP) evaluations 1298 fit 16833.3 change -5.114MxComputeGradientDescent(SLSQP) evaluations 1526 fit 16826.1 change -1.133MxComputeGradientDescent(SLSQP) evaluations 1754 fit 16822.7 change -1.578MxComputeGradientDescent(SLSQP) evaluations 1981 fit 16816.1 change -2.829MxComputeGradientDescent(SLSQP) evaluations 2209 fit 16810.7 change -1.694MxComputeGradientDescent(SLSQP) evaluations 2436 fit 16793.6 change -4.989MxComputeGradientDescent(SLSQP) evaluations 2662 fit 16785.4 change -1.834MxComputeGradientDescent(SLSQP) evaluations 2959 fit 16772.8 change -2.814MxComputeGradientDescent(SLSQP) evaluations 3319 fit 16764.2 change -2.368MxComputeGradientDescent(SLSQP) evaluations 3612 fit 16760.6 change -0.4956MxComputeGradientDescent(SLSQP) evaluations 3904 fit 16758.1 change -0.7614MxComputeGradientDescent(SLSQP) evaluations 4195 fit 16755.2 change -0.8757MxComputeGradientDescent(SLSQP) evaluations 4487 fit 16753.6 change -0.1797MxComputeGradientDescent(SLSQP) evaluations 4779 fit 16753.2 change -0.0567MxComputeGradientDescent(SLSQP) evaluations 5141 fit 16752.9 change -0.02456MxComputeGradientDescent(SLSQP) evaluations 5431 fit 16752.8 change -0.008048MxComputeGradientDescent(SLSQP) evaluations 5791 fit 16752.8 change -0.002334MxComputeGradientDescent(SLSQP) evaluations 6079 fit 16752.8 change -0.0005671MxComputeGradientDescent(SLSQP) evaluations 6439 fit 16752.8 change -0.001019 MxComputeGradientDescent(SLSQP) evaluations 6727 fit 16752.8 change -0.001206MxComputeGradientDescent(SLSQP) evaluations 7087 fit 16752.8 change -5.611e-05MxComputeGradientDescent(SLSQP) evaluations 7317 fit 16752.8 change -2.686e-05MxComputeNumericDeriv 23/630                                                  MxComputeNumericDeriv 104/630MxComputeNumericDeriv 194/630MxComputeNumericDeriv 284/630MxComputeNumericDeriv 373/630MxComputeNumericDeriv 464/630MxComputeNumericDeriv 553/630                             Warning message:
+In model 'mrdoc2' Optimizer returned a non-zero status code 5. The Hessian at the solution does not appear to be convex. See ?mxCheckIdentification for possible diagnosis (Mx status RED).
+Summary of mrdoc2
+
+The Hessian at the solution does not appear to be convex. See ?mxCheckIdentification for possible diagnosis (Mx status RED).
+
+Your ordinal model may converge if you reduce mvnRelEps
+   try: model <- mxOption(model, 'mvnRelEps', mxOption(model, 'mvnRelEps')/5)
+
+free parameters:
+        name                    matrix   row  col  Estimate Std.Error A lbound
+1         g1                    top.BE     Y    X -0.723390        NA
+2         g2                    top.BE     X    Y -0.485192        NA
+3         b1                    top.BE     X   iX  0.087681   0.01641
+4         b3                    top.BE     Y   iY  0.072364   0.01876
+5        ax2                     top.A     X    X  0.424748        NA
+6       covA                     top.A     X    Y  0.348665        NA
+7        ay2                     top.A     Y    Y  0.548572        NA
+8         x2                     top.A    iX   iX  0.766854   0.03638
+9         rf                     top.A    iX   iY -0.053521   0.02506
+10        y2                     top.A    iY   iY  0.719794   0.03442
+11       cx2                     top.C     X    X -0.033571        NA
+12      covC                     top.C     X    Y -0.014601        NA
+13       cy2                     top.C     Y    Y -0.001934   0.02658
+14       ex2                     top.E     X    X  0.340316   0.02385
+15      covE                     top.E     X    Y  0.215006   0.02716
+16       ey2                     top.E     Y    Y  0.199575   0.02434
+17       tx2                    top.Ts     X    X  0.070959        NA
+18      covT                    top.Ts     X    Y  0.091128        NA
+19       ty2                    top.Ts     Y    Y  0.196119   0.04196
+20  mean_Ph1                top.meanT1     1    1  0.024709   0.03548
+21  mean_Ph2                top.meanT1     1    2  0.071733        NA
+22 mean_prs1                top.meanT1     1    3  0.020008   0.04538
+23 mean_prs2                top.meanT1     1    4 -0.036737   0.04496
+24    X_dev3 top.deviations_for_thresh dev_3 X_T1  0.321901   0.01409    0.001
+25    X_dev4 top.deviations_for_thresh dev_4 X_T1  0.471706   0.01728    0.001
+26    X_dev5 top.deviations_for_thresh dev_5 X_T1  0.241007   0.02550    0.001
+27    X_dev6 top.deviations_for_thresh dev_6 X_T1  0.243727   0.03083    0.001
+28    X_dev7 top.deviations_for_thresh dev_7 X_T1  0.279118   0.04135    0.001
+29    X_dev8 top.deviations_for_thresh dev_8 X_T1  0.407524   0.06980    0.001
+30    Y_dev3 top.deviations_for_thresh dev_3 Y_T1  0.290580   0.05278    0.001
+31    Y_dev4 top.deviations_for_thresh dev_4 Y_T1  0.291371   0.04119    0.001
+32    Y_dev5 top.deviations_for_thresh dev_5 Y_T1  0.259750   0.03164    0.001
+33    Y_dev6 top.deviations_for_thresh dev_6 Y_T1  0.827483   0.03880    0.001
+34    Y_dev7 top.deviations_for_thresh dev_7 Y_T1  0.396388   0.02529    0.001
+35    Y_dev8 top.deviations_for_thresh dev_8 Y_T1  0.960883   0.04895    0.001
+   ubound
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+
+Model Statistics:
+               |  Parameters  |  Degrees of Freedom  |  Fit (-2lnL units)
+       Model:             35                   5597                 16753
+   Saturated:             NA                     NA                    NA
+Independence:             NA                     NA                    NA
+Number of observations/statistics: 782/5632
+
+
+,** Information matrix is not positive definite (not at a candidate optimum).
+  Be suspicious of these results. At minimum, do not trust the standard errors.
+
+Information Criteria:
+      |  df Penalty  |  Parameters Penalty  |  Sample-Size Adjusted
+AIC:           5559                  16823                    16826
+BIC:         -20534                  16986                    16875
+CFI: NA
+TLI: 1   (also known as NNFI)
+RMSEA:  0  [95% CI (NA, NA)]
+Prob(RMSEA <= 0.05): NA
+To get additional fit indices, see help(mxRefModels)
+timestamp: 2024-04-13 10:26:21
+Wall clock time: 33.74 secs
+optimizer:  SLSQP
+OpenMx version number: 2.20.7
+Need help?  See help(mxSummary)
+#+end_example
+
+* Range plot
+
+
+
+#+header: :width 2000 :height 2000 :res 250 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server  :results output graphics file :file graphs/range.png
+
+# Load necessary library
+library(ggplot2)
+
+data <- data.frame(
+  model = factor(c(rep("docEUR", 1), rep("mrdocEUR", 3), rep("mrdocrEUR", 3), rep("mrdoc2EUR", 4),
+                   rep("m_mrdoc2EUR", 4), rep("f_mrdoc2EUR", 4), rep("docAFR", 1), rep("docAMR", 1), rep("docr_EUR", 1), rep("docr_AFR", 1), rep("docr_AMR", 1)),
+                 levels = c("docEUR", "docAFR", "docAMR", "docr_EUR", "docr_AFR", "docr_AMR", "mrdocEUR", "mrdocrEUR", "mrdoc2EUR",  "m_mrdoc2EUR", "f_mrdoc2EUR")),
+  parameter = c("g1", "g1", "b1", "b2", "g1", "b1", "b2", "g1", "g2", "b1", "b3",
+                "g1", "g2", "b1", "b3", "g1", "g2", "b1", "b3", "g1", "g1", "g1", "g1", "g1"),
+  estimate = c(-0.268, -0.2523, 0.0758, -0.0591, -0.693, 0.106, 0.027, -0.856, -0.500, 0.059, 0.065,
+               -0.50485, -0.55838, 0.05791, -0.02813, -0.5123, -0.5079, 0.0319, 0.0286, -0.070, -0.259, -0.731, -0.058, -0.975),
+  lower = c(-0.412, -0.3451, 0.0216, -0.1099, -0.9512, 0.0540, -0.0354, -0.9742, -0.5835, 0.0282, 0.0312,
+            -0.50485, -0.55838, 0.05791, -0.02813, -0.72800, -0.70970, -0.03999, -0.03476, -0.261, -0.333, -1.11, -0.449, -1.11),
+  upper = c(-0.124, -0.159421, 0.130082, -0.008303, -0.4351, 0.1576, 0.0892, -0.7370, -0.4158, 0.0901, 0.0982,
+            0.007328, -0.232480, 0.263575, 0.142945, -0.296623, -0.306039, 0.103843, 0.091924, 0.122, -0.184, -0.35, 0.334, -0.839)
+)
+
+## # Create the plot
+ggplot(data, aes(x = parameter, y = estimate, ymin = lower, ymax = upper, color = parameter)) +
+  geom_pointrange(size=.1) +
+  # add a line in the zero
+  geom_hline(yintercept = 0, linetype="dashed", color = "red", size = .1) +
+  facet_wrap(~ model, scales = "free_x", ncol=3) +
+  theme_luis() +
+  theme(legend.position = c(.85,.09)) +
+  scale_color_manual(values =cb_palette) +
+  labs(x = "Parameter", y = "Estimate / Wald type CIs")
+
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/range.png]]
+
+* Quick sim to check power with siblings
+
+#+begin_src R :eval no
+## cl <- makeCluster(detectCores(), outfile="")
+## registerDoParallel(cl)
+library("foreach")
+
+umx_set_auto_run(autoRun = T)
+sim <- function(abs, cbs,ebs, ass, css,ess, b1, group) {
+
+   modelwSibs <- umxMRDoC2(pheno = c("X","Y"),
+                   prss = c("iX","iY"))
+
+
+    modelwSibs <-
+          umxModify(modelwSibs,update = c("ax2", "cx2","ex2", "ay2", "cy2", "ey2","b1"),
+                    value = c(abs, cbs,ebs, ass, css,ess, b1), free = T, autoRun=F)
+
+    modelwSibs <-
+          mxGenerateData(modelwSibs,nrows = 1000, returnModel = T, empirical = T)
+   modelwSibs <- mxRun(modelwSibs)
+
+
+     keep <-
+       tibble(names = summary(modelwSibs)$parameters$name,
+                    est = summary(modelwSibs)$parameters$Estimate,
+                    se = summary(modelwSibs)$parameters$Std.Error) %>%
+             pivot_wider(names_from = "names",
+                         values_from = c("est","se"),
+                         names_glue = "mrdoc2_{.name}",
+                         names_sort = TRUE) %>%
+       mutate(group = group,
+              true_b1 = b1,
+              twins = umxPower(modelwSibs,power = .8, update = c("g1"))[1])
+  return(keep)
+}
+
+power <- foreach(abs = c(0.49,0.72, 0.51,0.60),
+                cbs=c(0.1,0.03,0.20,0.28),
+                ebs=c(0.39, .30,.3,.1),
+                ass =c(0.22,0.37,0.81,0.22),
+                css=c(0,.01,.11,0),
+                ess=c(.88, .5, .19, .79),
+                group = c("AUDHD","BMIMD","CANSCZ","LDLHD"), .combine=rbind,
+                    .packages = c("umx", "MASS"))  %:%
+          foreach(b1 = c(0.03,0.04,0.05,0.06, 0.07, 0.08,
+                        0.09, 0.010), .combine =rbind) %do% {
+
+         sim(abs = abs, cbs = cbs,ebs=ebs, ass = ass, css = css,ess=ess, b1 = b1, group = group)
+
+
+}
+
+## stopCluster(cl)
+
+#+end_src
+
+#+header: :width 2000 :height 2000 :res 250 :type cairo
+#+BEGIN_SRC R :exports both :session R-ea-server  :results output graphics file :file graphs/power.png :eval no
+library(scales)
+
+power %>%
+  ggplot(aes(x = mrdoc2_est_b1,y= twins, color = group)) +
+  geom_smooth(se=F,size = 0.8)+
+  geom_vline(xintercept = 0.024, linetype="dotted", size = 0.3) +
+  annotate("text", x = 0.023, y = 15000, label = "a", size=4) +
+  geom_vline(xintercept = 0.05, linetype="dotted", size = 0.3) +
+  annotate("text", x = 0.049, y = 15000, label = "c", size=4) +
+   geom_vline(xintercept = 0.055, linetype="dotted", size = 0.3) +
+  annotate("text", x = 0.054, y = 15000, label = "d",  size=4) +
+  geom_vline(xintercept = 0.030, linetype="dotted", size = 0.3) +
+  annotate("text", x = 0.029, y = 15000, label = "b",  size=4) +
+  ## scale_y_continuous(trans = 'log10', labels = label_number(suffix = "k", scale = 1/1000),
+                     ## breaks = c(2000, 3000, 4000, 5000, 6000, 7000)) +
+  scale_x_continuous(breaks = c(0.030, 0.040, 0.050, 0.060, 0.070, 0.080, 0.09)) +
+  scale_color_manual("Phenotypes",
+                    labels= c("AUD - Heart disease", "BMI - Major depression",
+                                           "Cannabis use - Schizophrenia", "LDL - Heart disease"),
+                    values = cb_palette) +
+  theme_luis() +
+  theme(legend.position = c(0.8, 0.8),
+        panel.border = element_rect(colour = "black"),
+        legend.background = element_rect(linetype = 1, size = 0.2, colour = 1))+
+  labs(x = "R2 for the instrument PS1", y = "Number of families needed for 80% power (log10 scale)")
+
+#+end_src
+
+#+RESULTS:
+[[file:/graphs/power.png]]
+
+* System information
+
+#+begin_src R :results output :exports both :session R-ea-server
+sessionInfo()
+#+end_src
+#+results:
+#+begin_example
+R version 4.1.1 Patched (2021-10-16 r81068)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: CentOS Linux 7 (Core)
+
+Matrix products: default
+BLAS:   /usr/lib64/libblas.so.3.4.2
+LAPACK: /usr/local/lib64/R-4.1.1/R/lib/libRlapack.so
+
+locale:
+ [1] LC_CTYPE=en_US.utf8       LC_NUMERIC=C
+ [3] LC_TIME=en_US.utf8        LC_COLLATE=en_US.utf8
+ [5] LC_MONETARY=en_US.utf8    LC_MESSAGES=en_US.utf8
+ [7] LC_PAPER=en_US.utf8       LC_NAME=C
+ [9] LC_ADDRESS=C              LC_TELEPHONE=C
+[11] LC_MEASUREMENT=en_US.utf8 LC_IDENTIFICATION=C
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+ [1] Cairo_1.6-2        ggpmisc_0.5.5      ggpp_0.5.6         patchwork_1.2.0
+ [5] forcats_1.0.0      tibble_3.2.1       colorout_1.2-2     RColorBrewer_1.1-3
+ [9] tableone_0.13.2    ggpubr_0.6.0       tidyr_1.3.0        ggplot2_3.4.3
+[13] visdat_0.6.0       umx_4.19.0         OpenMx_2.20.7      readr_2.1.4
+[17] here_1.0.1         purrr_1.0.2        dplyr_1.1.4        data.table_1.14.8
+[21] stringr_1.5.0      dtplyr_1.2.2
+
+loaded via a namespace (and not attached):
+ [1] nlme_3.1-163       webshot_0.5.5      httr_1.4.7         rprojroot_2.0.3
+ [5] tools_4.1.1        backports_1.4.1    utf8_1.2.3         R6_2.5.1
+ [9] DBI_1.1.3          colorspace_2.1-0   withr_2.5.0        mnormt_2.1.1
+[13] tidyselect_1.2.0   compiler_4.1.1     polycor_0.8-1      cli_3.6.1
+[17] rvest_1.0.3        quantreg_5.97      SparseM_1.81       xml2_1.3.5
+[21] labeling_0.4.2     scales_1.2.1       psych_2.3.6        proxy_0.4-27
+[25] systemfonts_1.0.4  digest_0.6.33      rmarkdown_2.24     svglite_2.1.1
+[29] pkgconfig_2.0.3    htmltools_0.5.6    MuMIn_1.46.0       labelled_2.12.0
+[33] fastmap_1.1.1      htmlwidgets_1.6.2  rlang_1.1.1        rstudioapi_0.15.0
+[37] farver_2.1.1       visNetwork_2.1.2   generics_0.1.3     zoo_1.8-12
+[41] jsonlite_1.8.7     car_3.1-2          confintr_1.0.2     magrittr_2.0.3
+[45] polynom_1.4-1      kableExtra_1.3.4   Matrix_1.6-1       Rcpp_1.0.11
+[49] munsell_0.5.0      fansi_1.0.4        abind_1.4-5        lifecycle_1.0.3
+[53] stringi_1.7.12     carData_3.0-5      MASS_7.3-60        grid_4.1.1
+[57] parallel_4.1.1     crayon_1.5.2       lattice_0.21-8     haven_2.5.3
+[61] cowplot_1.1.1      splines_4.1.1      hms_1.1.3          knitr_1.43
+[65] pillar_1.9.0       ggsignif_0.6.4     admisc_0.33        stats4_4.1.1
+[69] glue_1.6.2         evaluate_0.21      mitools_2.4        RcppParallel_5.1.7
+[73] vctrs_0.6.5        tzdb_0.4.0         MatrixModels_0.5-2 gtable_0.3.4
+[77] xfun_0.40          xtable_1.8-4       broom_1.0.5        survey_4.2-1
+[81] e1071_1.7-13       rstatix_0.7.2      class_7.3-22       survival_3.5-7
+[85] viridisLite_0.4.2  DiagrammeR_1.0.10
+#+end_example
