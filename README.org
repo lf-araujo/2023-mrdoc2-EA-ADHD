@@ -22,7 +22,7 @@ Link below:
 4. Dardani, C. et al. Is genetic liability to ADHD and ASD causally linked to educational attainment? Int J Epidemiol 50, 2011–2023 (2021).
 5. Michaëlsson, M. et al. The impact and causal directions for the associations between diagnosis of ADHD, socioeconomic status, and intelligence by use of a bi-directional two-sample Mendelian randomization design. BMC Med 20, 106 (2022).
 6. Demange, P. A., Boomsma, D. I., van Bergen, E. & Nivard, M. G. Evaluating the causal relationship between educational attainment and mental health. medRxiv 2023.01.26.23285029 (2023) doi:10.1101/2023.01.26.23285029.
-7. Castro-de-Araujo, L. FS., de Araujo, J. A. P., Morais Xavier, É. F. & Kanaan, R. A. A. Feedback-loop between psychotic symptoms and brain volume: A cross-lagged panel model study. Journal of Psychiatric Research 162, 150–155 (2023).
+7. Castro-de-Araujo, L. F. S., Singh, M., Zhou, Y., Vinh, P., Verhulst, B., Dolan, C. V., & Neale, M. C. (2023). MR-DoC2: Bidirectional Causal Modeling with Instrumental Variables and Data from Relatives. Behavior Genetics, 53, 63–73. https://doi.org/10.1007/s10519-022-10122-x
 8. Castro-de-Araujo, L. et al. Power, measurement error, and pleiotropy robustness in twin-design extensions to Mendelian Randomization. https://www.researchsquare.com (2023) doi:10.21203/rs.3.rs-3411642/v1.
 9. Demontis, D. et al. Genome-wide analyses of ADHD identify 27 risk loci, refine the genetic architecture and implicate several cognitive domains. Nat Genet 55, 198–208 (2023).
 10. Okbay, A. et al. Polygenic prediction of educational attainment within and between families from genome-wide association analyses in 3 million individuals. Nat Genet 54, 437–449 (2022).
@@ -2425,7 +2425,10 @@ umx_set_auto_run(autoRun = F)
 #+begin_example
 Found 1 pair(s) of ordinal variables:'cbcl_adhd_T1' and 'cbcl_adhd_T2' (No binary)
 Running ACE with 9 parameters
-MxComputeGradientDescent(SLSQP) evaluations 163 fit 2490.91 change -1.064                                                                         ACE -2 × log(Likelihood) = 2485.029
+
+MxComputeGradientDescent(SLSQP) evaluations 163 fit 2490.91 change -1.064
+                                                                         
+ACE -2 × log(Likelihood) = 2485.029
 
 
 Table: Standardized parameter estimates from a 1-factor Cholesky ACE model. A: additive genetic; C: common environment; E: unique environment.
@@ -2443,7 +2446,16 @@ Table: Means (from model$top$expMean)
 
 ?umxPlotACE options: std=T/F, means=T/F, digits=n, strip_zero=T/F, file=, min=, max =
 You gave me an ACE model
-Beginning initial fit attemptFit attempt 0, fit=2485.0287312298, new current best! (was 2485.02873124136)Beginning fit attempt 1 of at maximum 10 extra tries                        Fit attempt 1, fit=2485.02873122916, new current best! (was 2485.0287312298)Beginning fit attempt 2 of at maximum 10 extra tries                        Fit attempt 2, fit=2485.02873122916, new current best! (was 2485.02873122916)Beginning fit attempt 3 of at maximum 10 extra tries                         Fit attempt 3, fit=2485.02835752317, new current best! (was 2485.02873122916)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=2485.0287312298, new current best! (was 2485.02873124136)
+Beginning fit attempt 1 of at maximum 10 extra tries                        
+Fit attempt 1, fit=2485.02873122916, new current best! (was 2485.0287312298)
+Beginning fit attempt 2 of at maximum 10 extra tries                        
+Fit attempt 2, fit=2485.02873122916, new current best! (was 2485.02873122916)
+Beginning fit attempt 3 of at maximum 10 extra tries                         
+Fit attempt 3, fit=2485.02835752317, new current best! (was 2485.02873122916)
+                                                                             
  Solution found!  Final fit=2485.0284 (started at 2485.0287)  (4 attempt(s): 4 valid, 0 errors)
 
 ADE -2 × log(Likelihood) = 2485.028
@@ -2461,7 +2473,10 @@ Table: Means (from model$top$expMean)
 |          |cbcl_adhd_T1 |cbcl_adhd_T2 |
 |:---------|:------------|:------------|
 |intercept |0            |0            |
-Beginning initial fit attemptFit attempt 0, fit=2488.30871160965, new current best! (was 2717.021789912)                                                                           
+
+Beginning initial fit attempt
+Fit attempt 0, fit=2488.30871160965, new current best! (was 2717.021789912)
+                                                                           
  Solution found!  Final fit=2488.3087 (started at 2717.0218)  (1 attempt(s): 1 valid, 0 errors)
 
 DE -2 × log(Likelihood) = 2488.309
@@ -2479,7 +2494,10 @@ Table: Means (from model$top$expMean)
 |          | cbcl_adhd_T1| cbcl_adhd_T2|
 |:---------|------------:|------------:|
 |intercept |       -0.002|       -0.002|
-Beginning initial fit attemptFit attempt 0, fit=2485.02873122916, new current best! (was 2485.03503630165)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=2485.02873122916, new current best! (was 2485.03503630165)
+                                                                             
  Solution found!  Final fit=2485.0287 (started at 2485.035)  (1 attempt(s): 1 valid, 0 errors)
 
 AE -2 × log(Likelihood) = 2485.029
@@ -2497,7 +2515,10 @@ Table: Means (from model$top$expMean)
 |          |cbcl_adhd_T1 |cbcl_adhd_T2 |
 |:---------|:------------|:------------|
 |intercept |0            |0            |
-Beginning initial fit attemptFit attempt 0, fit=2547.54324187912, new current best! (was 2727.96986148964)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=2547.54324187912, new current best! (was 2727.96986148964)
+                                                                             
  Solution found!  Final fit=2547.5432 (started at 2727.9699)  (1 attempt(s): 1 valid, 0 errors)
 
 E -2 × log(Likelihood) = 2547.543
@@ -2549,7 +2570,21 @@ Table: Means (from model$top$expMean)
 
 ?umxPlotACE options: std=T/F, means=T/F, digits=n, strip_zero=T/F, file=, min=, max =
 You gave me an ACE model
-Beginning initial fit attemptFit attempt 0, fit=3125.40042433417, new current best! (was 3125.40042433418)Beginning fit attempt 1 of at maximum 10 extra tries                         MxComputeGradientDescent(SLSQP) evaluations 22 fit 3125.4                                                         Fit attempt 1, fit=3125.40042433416, new current best! (was 3125.40042433417)Beginning fit attempt 2 of at maximum 10 extra tries                         Fit attempt 2, fit=3125.40042433416, new current best! (was 3125.40042433416)Beginning fit attempt 3 of at maximum 10 extra tries                         Fit attempt 3, fit=3125.40042433416, new current best! (was 3125.40042433416)Beginning fit attempt 4 of at maximum 10 extra tries                         Fit attempt 4, fit=3124.23337591341, new current best! (was 3125.40042433416)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=3125.40042433417, new current best! (was 3125.40042433418)
+Beginning fit attempt 1 of at maximum 10 extra tries                         
+MxComputeGradientDescent(SLSQP) evaluations 22 fit 3125.4
+                                                         
+
+Fit attempt 1, fit=3125.40042433416, new current best! (was 3125.40042433417)
+Beginning fit attempt 2 of at maximum 10 extra tries                         
+Fit attempt 2, fit=3125.40042433416, new current best! (was 3125.40042433416)
+Beginning fit attempt 3 of at maximum 10 extra tries                         
+Fit attempt 3, fit=3125.40042433416, new current best! (was 3125.40042433416)
+Beginning fit attempt 4 of at maximum 10 extra tries                         
+Fit attempt 4, fit=3124.23337591341, new current best! (was 3125.40042433416)
+                                                                             
  Solution found!  Final fit=3124.2334 (started at 3125.4004)  (5 attempt(s): 5 valid, 0 errors)
 
 ADE -2 × log(Likelihood) = 3124.233
@@ -2567,7 +2602,10 @@ Table: Means (from model$top$expMean)
 |          | sag_grade_type_T1| sag_grade_type_T2|
 |:---------|-----------------:|-----------------:|
 |intercept |             0.095|             0.095|
-Beginning initial fit attemptFit attempt 0, fit=3125.11201925949, new current best! (was 3161.47860932263)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=3125.11201925949, new current best! (was 3161.47860932263)
+                                                                             
  Solution found!  Final fit=3125.112 (started at 3161.4786)  (1 attempt(s): 1 valid, 0 errors)
 
 DE -2 × log(Likelihood) = 3125.112
@@ -2585,7 +2623,10 @@ Table: Means (from model$top$expMean)
 |          | sag_grade_type_T1| sag_grade_type_T2|
 |:---------|-----------------:|-----------------:|
 |intercept |             0.098|             0.098|
-Beginning initial fit attemptFit attempt 0, fit=3125.40042433566, new current best! (was 3176.4815184586)                                                                            
+
+Beginning initial fit attempt
+Fit attempt 0, fit=3125.40042433566, new current best! (was 3176.4815184586)
+                                                                            
  Solution found!  Final fit=3125.4004 (started at 3176.4815)  (1 attempt(s): 1 valid, 0 errors)
 
 AE -2 × log(Likelihood) = 3125.4
@@ -2603,7 +2644,10 @@ Table: Means (from model$top$expMean)
 |          | sag_grade_type_T1| sag_grade_type_T2|
 |:---------|-----------------:|-----------------:|
 |intercept |             0.087|             0.087|
-Beginning initial fit attemptFit attempt 0, fit=3196.53205759658, new current best! (was 3479.71311620938)                                                                             
+
+Beginning initial fit attempt
+Fit attempt 0, fit=3196.53205759658, new current best! (was 3479.71311620938)
+                                                                             
  Solution found!  Final fit=3196.5321 (started at 3479.7131)  (1 attempt(s): 1 valid, 0 errors)
 
 E -2 × log(Likelihood) = 3196.532
@@ -4109,7 +4153,42 @@ summary(bidir)
 #+RESULTS:
 #+begin_example
 Running mrdoc2 with 35 parameters
-MxComputeGradientDescent(SLSQP) evaluations 152 fit 17161.4 change -609.2MxComputeGradientDescent(SLSQP) evaluations 459 fit 16894.5 change -25.61MxComputeGradientDescent(SLSQP) evaluations 689 fit 16860.2 change -6.434MxComputeGradientDescent(SLSQP) evaluations 994 fit 16849.2 change -3.88 MxComputeGradientDescent(SLSQP) evaluations 1298 fit 16833.3 change -5.114MxComputeGradientDescent(SLSQP) evaluations 1526 fit 16826.1 change -1.133MxComputeGradientDescent(SLSQP) evaluations 1754 fit 16822.7 change -1.578MxComputeGradientDescent(SLSQP) evaluations 1981 fit 16816.1 change -2.829MxComputeGradientDescent(SLSQP) evaluations 2209 fit 16810.7 change -1.694MxComputeGradientDescent(SLSQP) evaluations 2436 fit 16793.6 change -4.989MxComputeGradientDescent(SLSQP) evaluations 2662 fit 16785.4 change -1.834MxComputeGradientDescent(SLSQP) evaluations 2959 fit 16772.8 change -2.814MxComputeGradientDescent(SLSQP) evaluations 3319 fit 16764.2 change -2.368MxComputeGradientDescent(SLSQP) evaluations 3612 fit 16760.6 change -0.4956MxComputeGradientDescent(SLSQP) evaluations 3904 fit 16758.1 change -0.7614MxComputeGradientDescent(SLSQP) evaluations 4195 fit 16755.2 change -0.8757MxComputeGradientDescent(SLSQP) evaluations 4487 fit 16753.6 change -0.1797MxComputeGradientDescent(SLSQP) evaluations 4779 fit 16753.2 change -0.0567MxComputeGradientDescent(SLSQP) evaluations 5141 fit 16752.9 change -0.02456MxComputeGradientDescent(SLSQP) evaluations 5431 fit 16752.8 change -0.008048MxComputeGradientDescent(SLSQP) evaluations 5791 fit 16752.8 change -0.002334MxComputeGradientDescent(SLSQP) evaluations 6079 fit 16752.8 change -0.0005671MxComputeGradientDescent(SLSQP) evaluations 6439 fit 16752.8 change -0.001019 MxComputeGradientDescent(SLSQP) evaluations 6727 fit 16752.8 change -0.001206MxComputeGradientDescent(SLSQP) evaluations 7087 fit 16752.8 change -5.611e-05MxComputeGradientDescent(SLSQP) evaluations 7317 fit 16752.8 change -2.686e-05MxComputeNumericDeriv 23/630                                                  MxComputeNumericDeriv 104/630MxComputeNumericDeriv 194/630MxComputeNumericDeriv 284/630MxComputeNumericDeriv 373/630MxComputeNumericDeriv 464/630MxComputeNumericDeriv 553/630                             Warning message:
+
+MxComputeGradientDescent(SLSQP) evaluations 152 fit 17161.4 change -609.2
+MxComputeGradientDescent(SLSQP) evaluations 459 fit 16894.5 change -25.61
+MxComputeGradientDescent(SLSQP) evaluations 689 fit 16860.2 change -6.434
+MxComputeGradientDescent(SLSQP) evaluations 994 fit 16849.2 change -3.88 
+MxComputeGradientDescent(SLSQP) evaluations 1298 fit 16833.3 change -5.114
+MxComputeGradientDescent(SLSQP) evaluations 1526 fit 16826.1 change -1.133
+MxComputeGradientDescent(SLSQP) evaluations 1754 fit 16822.7 change -1.578
+MxComputeGradientDescent(SLSQP) evaluations 1981 fit 16816.1 change -2.829
+MxComputeGradientDescent(SLSQP) evaluations 2209 fit 16810.7 change -1.694
+MxComputeGradientDescent(SLSQP) evaluations 2436 fit 16793.6 change -4.989
+MxComputeGradientDescent(SLSQP) evaluations 2662 fit 16785.4 change -1.834
+MxComputeGradientDescent(SLSQP) evaluations 2959 fit 16772.8 change -2.814
+MxComputeGradientDescent(SLSQP) evaluations 3319 fit 16764.2 change -2.368
+MxComputeGradientDescent(SLSQP) evaluations 3612 fit 16760.6 change -0.4956
+MxComputeGradientDescent(SLSQP) evaluations 3904 fit 16758.1 change -0.7614
+MxComputeGradientDescent(SLSQP) evaluations 4195 fit 16755.2 change -0.8757
+MxComputeGradientDescent(SLSQP) evaluations 4487 fit 16753.6 change -0.1797
+MxComputeGradientDescent(SLSQP) evaluations 4779 fit 16753.2 change -0.0567
+MxComputeGradientDescent(SLSQP) evaluations 5141 fit 16752.9 change -0.02456
+MxComputeGradientDescent(SLSQP) evaluations 5431 fit 16752.8 change -0.008048
+MxComputeGradientDescent(SLSQP) evaluations 5791 fit 16752.8 change -0.002334
+MxComputeGradientDescent(SLSQP) evaluations 6079 fit 16752.8 change -0.0005671
+MxComputeGradientDescent(SLSQP) evaluations 6439 fit 16752.8 change -0.001019 
+MxComputeGradientDescent(SLSQP) evaluations 6727 fit 16752.8 change -0.001206
+MxComputeGradientDescent(SLSQP) evaluations 7087 fit 16752.8 change -5.611e-05
+MxComputeGradientDescent(SLSQP) evaluations 7317 fit 16752.8 change -2.686e-05
+MxComputeNumericDeriv 23/630                                                  
+MxComputeNumericDeriv 104/630
+MxComputeNumericDeriv 194/630
+MxComputeNumericDeriv 284/630
+MxComputeNumericDeriv 373/630
+MxComputeNumericDeriv 464/630
+MxComputeNumericDeriv 553/630
+                             
+Warning message:
 In model 'mrdoc2' Optimizer returned a non-zero status code 5. The Hessian at the solution does not appear to be convex. See ?mxCheckIdentification for possible diagnosis (Mx status RED).
 Summary of mrdoc2
 
